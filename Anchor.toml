@@ -1,0 +1,26 @@
+[toolchain]
+
+[features]
+resolution = true
+skip-lint = false
+
+[programs.devnet]
+apex_racing = "49LZgLYqX4RFDqtNYatt7xeiTaLd9nuzHKtuiQ3NUtn9"
+
+[programs.localnet]
+apex_racing = "49LZgLYqX4RFDqtNYatt7xeiTaLd9nuzHKtuiQ3NUtn9"
+
+[registry]
+url = "https://api.apr.dev"
+
+[provider]
+cluster = "devnet"
+wallet = "~/.config/solana/id.json"
+
+[scripts]
+test = "echo 'no anchor mocha suite; the client is exercised against devnet'"
+
+# The rollup this program's sessions are delegated to.
+# Probed reachable 2026-07-29: magicblock-core 0.13.17.
+[test.validator]
+url = "https://api.devnet.solana.com"

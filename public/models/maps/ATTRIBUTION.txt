@@ -1,0 +1,23 @@
+APEX supplied map assets — CC-BY-4.0 attribution
+
+Suzuka Circuit 2001 layout
+This work is based on "Suzuka Circuit 2001 layout"
+https://sketchfab.com/3d-models/suzuka-circuit-2001-layout-0b1085d93dfa4e81aab2c83c26bf185b
+by Dave Bored SketchFab (https://sketchfab.com/Tyler_Dave), licensed under CC-BY-4.0.
+
+Starting Line
+This work is based on "Starting Line"
+https://sketchfab.com/3d-models/starting-line-ecb35b3e5b424f9dbf54174e6c5907de
+by Anthony Yanez (https://sketchfab.com/paulyanez), licensed under CC-BY-4.0.
+
+Finish Line
+This work is based on "Finish Line"
+https://sketchfab.com/3d-models/finish-line-70aecb6bac234266bdebd22322396caa
+by Kemal Çolak (https://sketchfab.com/kemalcolak), licensed under CC-BY-4.0.
+
+Tyre Barrier (Single Model From Asset Pack)
+This work is based on "Tyre Barrier (Single Model From Asset Pack)"
+https://sketchfab.com/3d-models/tyre-barrier-single-model-from-asset-pack-21d2ff0e4e0c4c709b884a152ee8aa88
+by Cherk (https://sketchfab.com/alex20010804), licensed under CC-BY-4.0.
+
+License: https://creativecommons.org/licenses/by/4.0/

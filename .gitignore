@@ -1,0 +1,39 @@
+# dependencies
+node_modules/
+.pnp
+.pnp.js
+
+# next
+.next/
+out/
+build/
+next-env.d.ts
+
+# production assets are generated from assets/source by `npm run assets:optimize`
+public/models/cars/*.glb
+
+# raw source art (25-37MB each) — keep out of git, distribute out of band
+assets/source/
+
+# env
+.env
+.env.local
+.env*.local
+
+# anchor / solana
+programs/**/target/
+target/
+test-ledger/
+*.so
+keypairs/
+!keypairs/.gitkeep
+
+# misc
+.DS_Store
+*.pem
+.vercel
+*.tsbuildinfo
+coverage/
+.idea/
+.vscode/*
+!.vscode/extensions.json

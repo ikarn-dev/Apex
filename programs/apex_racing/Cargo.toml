@@ -1,0 +1,24 @@
+[package]
+name = "apex-racing"
+version = "0.1.0"
+description = "On-chain progression for APEX: Zero Latency, running on MagicBlock Ephemeral Rollups"
+edition = "2021"
+license = "MIT"
+
+[lib]
+crate-type = ["cdylib", "lib"]
+name = "apex_racing"
+
+[features]
+default = []
+cpi = ["no-entrypoint"]
+no-entrypoint = []
+no-idl = []
+no-log-ix-name = []
+idl-build = ["anchor-lang/idl-build"]
+
+[dependencies]
+anchor-lang = "1.1.2"
+# `anchor` selects the SDK's anchor-1.0 code path (anchor-modern). Use
+# `anchor-compat` instead if you ever pin anchor-lang back below 1.0.
+ephemeral-rollups-sdk = { version = "0.16.2", features = ["anchor"] }

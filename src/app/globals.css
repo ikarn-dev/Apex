@@ -1,0 +1,177 @@
+@import "tailwindcss";
+
+/* ---------------------------------------------------------------------------
+   APEX design tokens — neon-industrial. Near-black surfaces, one hot accent.
+   --------------------------------------------------------------------------- */
+@theme {
+  --color-void: #05070a;
+  --color-asphalt: #0b0f14;
+  --color-carbon: #12181f;
+  --color-steel: #1c242e;
+  --color-fog: #6b7885;
+  --color-chalk: #e6edf3;
+
+  --color-apex: #00e5ff;
+  --color-apex-dim: #0092a8;
+  --color-ember: #ff3d54;
+  --color-amber: #ffb300;
+  --color-lime: #4ade80;
+  --color-violet: #a855f7;
+
+  --font-display: var(--font-display), "Arial Black", sans-serif;
+  --font-mono: var(--font-mono), ui-monospace, monospace;
+
+  --ease-snap: cubic-bezier(0.16, 1, 0.3, 1);
+
+  --animate-scan: scan 6s linear infinite;
+  --animate-pulse-apex: pulse-apex 1.8s var(--ease-snap) infinite;
+  --animate-rise: rise 0.4s var(--ease-snap) both;
+}
+
+@keyframes scan {
+  0% {
+    transform: translateY(-100%);
+  }
+  100% {
+    transform: translateY(100%);
+  }
+}
+
+@keyframes pulse-apex {
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.35;
+  }
+}
+
+@keyframes rise {
+  from {
+    opacity: 0;
+    transform: translateY(8px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+/* --------------------------------------------------------------------------- */
+
+* {
+  -webkit-tap-highlight-color: transparent;
+}
+
+html {
+  color-scheme: dark;
+  background-color: var(--color-void);
+  /* Avoid iOS text auto-inflation in landscape gameplay. */
+  -webkit-text-size-adjust: 100%;
+}
+
+body {
+  background-color: var(--color-void);
+  color: var(--color-chalk);
+  font-family: var(--font-mono);
+  overscroll-behavior: none;
+  min-height: 100dvh;
+}
+
+/* The race route locks scrolling; menus scroll normally. */
+body[data-race="active"] {
+  overflow: hidden;
+  touch-action: none;
+  user-select: none;
+}
+
+@layer utilities {
+  .safe-t {
+    padding-top: env(safe-area-inset-top, 0px);
+  }
+  .safe-b {
+    padding-bottom: env(safe-area-inset-bottom, 0px);
+  }
+  .safe-x {
+    padding-left: env(safe-area-inset-left, 0px);
+    padding-right: env(safe-area-inset-right, 0px);
+  }
+
+  /* Telemetry label: small, wide, uppercase. Used all over the HUD and menus. */
+  .label {
+    font-size: 0.625rem;
+    line-height: 1;
+    letter-spacing: 0.18em;
+    text-transform: uppercase;
+    color: var(--color-fog);
+  }
+
+  .hairline {
+    border-color: color-mix(in srgb, var(--color-steel) 100%, transparent);
+  }
+
+  .glow-apex {
+    box-shadow:
+      0 0 0 1px color-mix(in srgb, var(--color-apex) 40%, transparent),
+      0 0 24px -6px color-mix(in srgb, var(--color-apex) 55%, transparent);
+  }
+
+  .grid-floor {
+    background-image:
+      linear-gradient(
+        to right,
+        color-mix(in srgb, var(--color-apex) 7%, transparent) 1px,
+        transparent 1px
+      ),
+      linear-gradient(
+        to bottom,
+        color-mix(in srgb, var(--color-apex) 7%, transparent) 1px,
+        transparent 1px
+      );
+    background-size: 48px 48px;
+  }
+
+  .clip-notch {
+    clip-path: polygon(0 0, calc(100% - 10px) 0, 100% 10px, 100% 100%, 10px 100%, 0 calc(100% - 10px));
+  }
+}
+
+/* Focus ring: visible, on-brand, keyboard-only. */
+:focus-visible {
+  outline: 2px solid var(--color-apex);
+  outline-offset: 2px;
+}
+
+/* Wallet adapter modal — restyled to match, since we ship its CSS. */
+.wallet-adapter-modal-wrapper {
+  background: var(--color-asphalt) !important;
+  border: 1px solid var(--color-steel);
+  border-radius: 4px !important;
+  font-family: var(--font-mono) !important;
+}
+
+.wallet-adapter-modal-title {
+  font-family: var(--font-display) !important;
+  color: var(--color-chalk) !important;
+  font-size: 1.25rem !important;
+  letter-spacing: 0.05em;
+}
+
+.wallet-adapter-modal-list li {
+  font-family: var(--font-mono) !important;
+}
+
+.wallet-adapter-button {
+  font-family: var(--font-mono) !important;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+  }
+}
