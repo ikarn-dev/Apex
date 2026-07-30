@@ -5,20 +5,34 @@
  * decisions. That separation is what lets the simulation run headless for replay
  * verification.
  *
- * If the model fails to load — a bad network, a missing optimised GLB — a blocked
- * primitive stands in. A race that renders boxes is far better than a race that
- * does not render.
+ * ## The rig
+ *
+ * The source model exposes four `WHEEL_**` groups and a `STEER_HR` column, and the
+ * asset pipeline pins those five nodes so `flatten`/`join` cannot fold them away.
+ * This view drives them every frame:
+ *
+ * - all four wheels spin at `wheelSpin`, derived from ground speed and the car's
+ *   own rolling radius, so the tyres never look like they are skating,
+ * - the front pair steers to the angle the simulation actually applied, which is
+ *   rate-limited and speed-scaled — not the raw input,
+ * - the steering wheel turns with them, geared up like a real rack,
+ * - the body rolls and pitches on a separate node from the model, so a car with a
+ *   `modelYaw` correction still rolls about its own forward axis.
+ *
+ * If the model fails to load — bad network, missing GLB — a blocked-out primitive
+ * stands in. A race that renders boxes is far better than a race that does not
+ * render.
  */
 
 import type { Object3D } from "three";
 import {
   Box3,
   BoxGeometry,
+  CircleGeometry,
   Group,
   Mesh,
   MeshBasicMaterial,
   MeshStandardMaterial,
-  CircleGeometry,
   Vector3,
 } from "three";
 import type { CarDefinition } from "../config/cars";
@@ -27,48 +41,47 @@ import type { QualitySettings } from "../config/quality";
 import type { Resources } from "../engine/Resources";
 import { clamp } from "@/lib/math";
 
-/** Length every car is normalised to, metres. */
-const TARGET_LENGTH = 4.2;
 const FULL_TURN = Math.PI * 2;
 
 /**
- * Transform rigs preserved by the asset pipeline.
+ * Rig groups preserved by the asset pipeline.
  *
- * The supplied model exposes one pivot group per road wheel plus a steering
- * column pivot. Their own transforms carry a baked axis change from the source
- * FBX export, so this view never rotates them directly — it wraps each one in
- * pivots built from the visible geometry's bounding box.
+ * Matched on the group, not the meshes inside it, so each wheel stays a single
+ * transformable subtree — rim, tyre, brake disc and decals together.
  */
-const WHEEL_PIVOT = /^(left|right)\s+(front|back|rear)\s+tire\s+pivot/i;
-const STEERING_PIVOT = /^steering\s+wheel\s+pivot/i;
+const WHEEL_GROUP = /^WHEEL_([LR])([FR])/i;
+const STEERING_GROUP = /^STEER_HR/i;
 
 /** Steering wheel rotation per radian of road-wheel angle. */
-const STEERING_RATIO = 7.5;
+const STEERING_RATIO = 8;
 
 interface WheelRig {
   steerPivot: Group;
   spinPivot: Group;
   front: boolean;
+  /** Left-hand wheels face the other way, so their spin axis is inverted. */
+  spinSign: number;
 }
 
 /**
  * Detail level for a given car in a given race.
  *
- * - `hq`          full model, 1K textures. The player's car only.
- * - `lq`          reduced model, 512 textures. Rivals, and everything on MEDIUM.
- * - `placeholder` blocked-out primitive, 2 draw calls.
- *
- * The last one exists because of a real measurement: after optimisation the
- * Kimera still ships 216 mesh primitives, since its static skins prevent
- * gltf-transform from joining meshes. Five rivals at 216 primitives each is over
- * a thousand draw calls before the track is drawn, which no phone will hold at
- * 30fps. On the LOW tier rivals therefore render as stylised blocks — a
- * deliberate trade of rival fidelity for a playable frame rate.
+ * - `hq` rigged model, larger textures. The player.
+ * - `lq` same model and textures, rig collapsed to save draw calls. Rivals.
  */
-export type CarDetail = "hq" | "lq" | "placeholder";
+export type CarDetail = "hq" | "lq";
 
 export class CarView {
   readonly group = new Group();
+
+  /**
+   * Carries body roll and pitch.
+   *
+   * Separate from the model so `modelYaw` cannot rotate the axes roll and pitch
+   * are applied around. With both on one object, a car needing a 90° correction
+   * would roll when it should pitch.
+   */
+  private readonly tilt = new Group();
   private body: Object3D | null = null;
   private shadowBlob: Mesh | null = null;
   private readonly wheelRigs: WheelRig[] = [];
@@ -82,7 +95,10 @@ export class CarView {
     private readonly detail: CarDetail = "lq",
   ) {
     this.group.name = `car-${car.id}`;
+    this.tilt.name = "tilt";
+    this.group.add(this.tilt);
     this.buildPlaceholder();
+    // Real shadow mapping replaces the blob where the tier can afford it.
     if (quality.shadowMapSize === 0) this.buildBlobShadow();
   }
 
@@ -90,23 +106,21 @@ export class CarView {
    * Swap in the real model once loaded.
    *
    * Called after construction so a race can start rendering immediately and
-   * upgrade in place rather than blocking on the network. On the `placeholder`
-   * detail level this is a no-op and the blocked-out car is the final look.
+   * upgrade in place rather than blocking on the network.
    */
   async attachModel(resources: Resources): Promise<void> {
-    if (this.detail === "placeholder") return;
+    const url = this.detail === "hq" ? this.car.model : this.car.modelLq;
     try {
-      const url = this.detail === "hq" ? this.car.model : this.car.modelLq;
       const model = await resources.load(url);
       const instance = resources.instantiate(model);
       const { yOffset } = resources.prepareCar(instance, {
-        targetLength: TARGET_LENGTH,
+        targetLength: this.car.targetLength,
         sourceSize: model.size,
         anisotropy: this.quality.anisotropy,
         castShadow: this.quality.shadowMapSize > 0,
-        // The scene always provides a pre-filtered sky environment now, so the
-        // bodywork has something to reflect on every tier.
-        envMapIntensity: this.quality.envProbe ? 1.15 : 0.9,
+        // The sky gradient is pre-filtered into an environment map, which is what
+        // stops this car's metallic paint and chrome from rendering near-black.
+        envMapIntensity: 1,
       });
 
       instance.rotation.y = this.car.modelYaw;
@@ -115,47 +129,59 @@ export class CarView {
 
       this.clearBody();
       this.body = instance;
-      this.group.add(instance);
-      this.bindWheelRigs(instance);
-    } catch {
-      // Keep the placeholder. Already visible, already correct size.
+      this.tilt.add(instance);
+      // Only the player's variant ships the rig; on a rival this finds nothing
+      // and the wheels ride along with the body, which is correct for the trade.
+      this.bindRig(instance);
+    } catch (error) {
+      // The placeholder stays, so the race is still playable. But this must not be
+      // silent: a missing GLB used to leave blocked-out boxes on the grid with
+      // nothing anywhere saying why.
+      throw new Error(
+        `Could not load ${url}: ${error instanceof Error ? error.message : String(error)}`,
+      );
     }
   }
 
-  /** Blocked-out stand-in: readable silhouette, one draw call per part. */
+  /** Blocked-out stand-in: readable silhouette, two draw calls. */
   private buildPlaceholder(): void {
     const shell = new Group();
 
-    const bodyGeometry = new BoxGeometry(1.9, 0.62, 4.3);
+    const bodyGeometry = new BoxGeometry(1.95, 0.6, 4.5);
     const bodyMaterial = new MeshStandardMaterial({
       color: this.car.accent,
-      roughness: 0.42,
-      metalness: 0.55,
+      roughness: 0.7,
+      metalness: 0.04,
     });
     const bodyMesh = new Mesh(bodyGeometry, bodyMaterial);
-    bodyMesh.position.y = 0.55;
-    bodyMesh.castShadow = this.quality.shadowMapSize > 0;
+    bodyMesh.position.y = 0.52;
     shell.add(bodyMesh);
 
-    const cabinGeometry = new BoxGeometry(1.55, 0.5, 1.9);
+    const cabinGeometry = new BoxGeometry(1.6, 0.46, 1.9);
     const cabinMaterial = new MeshStandardMaterial({
-      color: 0x0b0f14,
-      roughness: 0.16,
-      metalness: 0.35,
+      color: 0x17232b,
+      roughness: 0.74,
+      metalness: 0.02,
     });
     const cabin = new Mesh(cabinGeometry, cabinMaterial);
-    cabin.position.set(0, 1.02, -0.15);
+    cabin.position.set(0, 0.95, -0.2);
     shell.add(cabin);
 
     this.disposables.push(bodyGeometry, bodyMaterial, cabinGeometry, cabinMaterial);
 
     this.body = shell;
-    this.group.add(shell);
+    this.tilt.add(shell);
   }
 
-  /** Cheap contact shadow for the LOW tier, where shadow mapping is off. */
+  /**
+   * Contact shadow.
+   *
+   * There is no shadow mapping in the render budget on any tier, and a car with
+   * nothing under it looks like it is hovering. One unlit disc fixes that for the
+   * price of a single transparent draw.
+   */
   private buildBlobShadow(): void {
-    const geometry = new CircleGeometry(1.55, 12);
+    const geometry = new CircleGeometry(1.7, 14);
     const material = new MeshBasicMaterial({
       color: 0x000000,
       transparent: true,
@@ -166,50 +192,58 @@ export class CarView {
     const blob = new Mesh(geometry, material);
     blob.rotation.x = -Math.PI / 2;
     blob.position.y = 0.03;
+    blob.scale.y = 1.35;
     blob.name = "blob-shadow";
     this.group.add(blob);
     this.shadowBlob = blob;
     this.disposables.push(geometry, material);
   }
 
-  /**
-   * Build a steering pivot and an axle pivot around each imported wheel.
-   *
-   * The supplied rig's pivot nodes sit at baked, rotated offsets rather than at
-   * the visible wheel centre, so rotating them directly would swing the tyre
-   * around the car. Bounding-box centres give a correct axis of rotation for
-   * every wheel, and `attach()` preserves each source transform underneath.
-   */
-  private bindWheelRigs(root: Object3D): void {
-    const wheels: { node: Object3D; front: boolean }[] = [];
-    let steeringWheel: Object3D | null = null;
+  /** Find the pinned rig groups and wrap each in pivots it can be turned about. */
+  private bindRig(root: Object3D): void {
+    const wheels: { node: Object3D; front: boolean; left: boolean }[] = [];
+    let steering: Object3D | null = null;
 
     root.traverse((node) => {
-      if (!this.hasRenderableMesh(node)) return;
-      const wheel = node.name.match(WHEEL_PIVOT);
-      if (wheel) {
-        wheels.push({ node, front: /front/i.test(wheel[2]!) });
+      const wheel = node.name.match(WHEEL_GROUP);
+      if (wheel && this.hasRenderableMesh(node)) {
+        wheels.push({
+          node,
+          left: wheel[1]!.toUpperCase() === "L",
+          front: wheel[2]!.toUpperCase() === "F",
+        });
         return;
       }
-      if (!steeringWheel && STEERING_PIVOT.test(node.name)) steeringWheel = node;
+      if (!steering && STEERING_GROUP.test(node.name) && this.hasRenderableMesh(node)) {
+        steering = node;
+      }
     });
 
     for (const wheel of wheels) {
       const rig = this.wrapInPivots(root, wheel.node);
       if (!rig) continue;
-      this.wheelRigs.push({ ...rig, front: wheel.front });
+      this.wheelRigs.push({
+        ...rig,
+        front: wheel.front,
+        // Mirrored wheels spin the opposite way about a shared axis.
+        spinSign: wheel.left ? 1 : -1,
+      });
     }
 
-    if (steeringWheel) {
-      const rig = this.wrapInPivots(root, steeringWheel);
-      // The steering wheel's disc is thinnest in Z, so its column axis is Z.
+    if (steering) {
+      const rig = this.wrapInPivots(root, steering);
       if (rig) this.steeringRig = rig.spinPivot;
     }
   }
 
   /**
-   * Wrap a subtree in an outer (steering) and inner (spin) pivot centred on the
+   * Wrap a subtree in an outer (steering) and inner (spin) pivot, centred on the
    * subtree's own visible geometry.
+   *
+   * The source rig's nodes sit at baked, rotated offsets rather than at the
+   * visible wheel centre, so rotating them directly swings the tyre around the
+   * car instead of turning it. Bounding-box centres give a correct axis for every
+   * wheel, and `attach()` preserves each source transform underneath.
    */
   private wrapInPivots(
     root: Object3D,
@@ -249,7 +283,7 @@ export class CarView {
     this.wheelRigs.length = 0;
     this.steeringRig = null;
     if (!this.body) return;
-    this.group.remove(this.body);
+    this.tilt.remove(this.body);
     this.body = null;
   }
 
@@ -258,18 +292,15 @@ export class CarView {
     this.group.position.copy(interpolatedPosition);
     this.group.rotation.set(0, state.yaw, 0);
 
-    if (this.body) {
-      // Body roll and pitch live on the child so the group transform stays a
-      // clean position + yaw, which the camera relies on.
-      this.body.rotation.z = state.roll;
-      this.body.rotation.x = state.pitch;
-      this.body.rotation.y = this.car.modelYaw;
-    }
+    // Roll and pitch live on the tilt child so the group transform stays a clean
+    // position + yaw, which the camera relies on.
+    this.tilt.rotation.z = state.roll;
+    this.tilt.rotation.x = state.pitch;
 
     const wheelSpin = state.wheelSpin % FULL_TURN;
     for (const wheel of this.wheelRigs) {
       wheel.steerPivot.rotation.y = wheel.front ? state.steerAngle : 0;
-      wheel.spinPivot.rotation.x = wheelSpin;
+      wheel.spinPivot.rotation.x = wheelSpin * wheel.spinSign;
     }
 
     if (this.steeringRig) {
@@ -277,7 +308,7 @@ export class CarView {
     }
 
     if (this.shadowBlob) {
-      // Fades and shrinks with airtime so a jump reads correctly.
+      // Fades and shrinks with airtime so a crest reads correctly.
       const airborne = clamp((interpolatedPosition.y - state.y) * 0.5, 0, 1);
       const material = this.shadowBlob.material as MeshBasicMaterial;
       material.opacity = 0.34 * (1 - airborne);
@@ -293,11 +324,17 @@ export class CarView {
     return this.modelYOffset;
   }
 
+  /** Number of wheels this view is actually animating. Surfaced for diagnostics. */
+  get riggedWheels(): number {
+    return this.wheelRigs.length;
+  }
+
   dispose(): void {
     for (const item of this.disposables) item.dispose();
     this.disposables.length = 0;
     this.wheelRigs.length = 0;
     this.steeringRig = null;
+    this.tilt.clear();
     this.group.clear();
   }
 }

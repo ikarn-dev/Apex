@@ -28,20 +28,23 @@ pub struct LevelParams {
 /// Indexed by `LEVEL_INDEX` in `src/game/config/levels.ts`. Order is a wire
 /// format — append only, never reorder.
 pub const LEVELS: [LevelParams; 6] = [
-    // All acts use the supplied Suzuka route. Lap counts and timing bounds are
-    // calibrated to keep a browser race near the original session length.
+    // All acts run APEX International, the 5.86km generated circuit. Timing
+    // bounds come from `npm run calibrate`, which drives a reference policy round
+    // the real route in the real car, and must be re-run whenever the layout or
+    // the car's tuning changes — `floor_ms` is an anti-cheat rejection threshold,
+    // so a stale value here rejects legitimate runs.
     // 0 — ACT I, Cold Start
-    LevelParams { laps: 1, par_ms: 249500, floor_ms: 154500, base_xp: 400, drift_bps: 400, clean_bonus: 150, drift_target: 0, target_position: 3, unlock_xp: 0 },
+    LevelParams { laps: 1, par_ms: 139000, floor_ms: 86000, base_xp: 400, drift_bps: 400, clean_bonus: 150, drift_target: 0, target_position: 3, unlock_xp: 0 },
     // 1 — ACT II, Delegation
-    LevelParams { laps: 1, par_ms: 243000, floor_ms: 150500, base_xp: 700, drift_bps: 600, clean_bonus: 250, drift_target: 0, target_position: 3, unlock_xp: 0 },
+    LevelParams { laps: 1, par_ms: 139500, floor_ms: 86500, base_xp: 700, drift_bps: 600, clean_bonus: 250, drift_target: 0, target_position: 3, unlock_xp: 0 },
     // 2 — ACT III, Tick Rate
-    LevelParams { laps: 1, par_ms: 225000, floor_ms: 139500, base_xp: 850, drift_bps: 1_400, clean_bonus: 300, drift_target: 220, target_position: 3, unlock_xp: 2_500 },
+    LevelParams { laps: 1, par_ms: 145500, floor_ms: 90000, base_xp: 850, drift_bps: 1_400, clean_bonus: 300, drift_target: 50, target_position: 3, unlock_xp: 2_500 },
     // 3 — ACT IV, The Commit Window
-    LevelParams { laps: 2, par_ms: 477000, floor_ms: 295500, base_xp: 1_100, drift_bps: 900, clean_bonus: 400, drift_target: 0, target_position: 2, unlock_xp: 10_000 },
+    LevelParams { laps: 2, par_ms: 275500, floor_ms: 171000, base_xp: 1_100, drift_bps: 900, clean_bonus: 400, drift_target: 0, target_position: 2, unlock_xp: 10_000 },
     // 4 — ACT V, Undelegate
-    LevelParams { laps: 1, par_ms: 242500, floor_ms: 150500, base_xp: 1_600, drift_bps: 1_000, clean_bonus: 600, drift_target: 0, target_position: 1, unlock_xp: 30_000 },
+    LevelParams { laps: 1, par_ms: 140500, floor_ms: 87000, base_xp: 1_600, drift_bps: 1_000, clean_bonus: 600, drift_target: 0, target_position: 1, unlock_xp: 30_000 },
     // 5 — Endless Time Attack
-    LevelParams { laps: 1, par_ms: 255500, floor_ms: 158500, base_xp: 600, drift_bps: 1_100, clean_bonus: 350, drift_target: 0, target_position: 1, unlock_xp: 0 },
+    LevelParams { laps: 1, par_ms: 138000, floor_ms: 85500, base_xp: 600, drift_bps: 1_100, clean_bonus: 350, drift_target: 0, target_position: 1, unlock_xp: 0 },
 ];
 
 /// XP required to unlock each car index. Mirrors `CARS[*].unlockXp`.

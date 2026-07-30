@@ -53,7 +53,15 @@ export const viewport: Viewport = {
 export default function RootLayout({ children }: { children: React.ReactNode }) {
   return (
     <html lang="en" className={`${display.variable} ${mono.variable}`}>
-      <body className="antialiased">
+      {/*
+        `suppressHydrationWarning` covers exactly one real case: browser extensions
+        stamp attributes onto <body> before React hydrates — `bis_register` and
+        `__processed_<uuid>__` from anti-tracking extensions are the common ones —
+        and React reports the resulting attribute diff as a hydration mismatch the
+        app cannot fix. This flag applies to this element's own attributes only, not
+        to its children, so a genuine mismatch inside the app is still reported.
+      */}
+      <body className="antialiased" suppressHydrationWarning>
         <AppProviders>{children}</AppProviders>
       </body>
     </html>

@@ -3,9 +3,11 @@
 /**
  * Lazy boundary for the race view.
  *
- * three.js and pixi.js together are the largest thing this app ships. Loading
- * them behind `ssr: false` keeps them out of every other route's bundle, and out
- * of the server build entirely — neither library can be evaluated without a DOM.
+ * three.js is the largest thing this app ships. Loading it behind `ssr: false`
+ * keeps it out of every other route's bundle, and out of the server build
+ * entirely — it cannot be evaluated without a DOM. That also means the race view
+ * never server-renders, so the engine, the device probe and the seeded RNG inside
+ * it can read browser globals directly without risking a hydration mismatch.
  */
 
 import dynamic from "next/dynamic";

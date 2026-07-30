@@ -14,9 +14,32 @@ import type { ControlScheme } from "../types";
 import type { VehicleInput } from "../physics/VehicleSim";
 import { clamp, moveTowards } from "@/lib/math";
 
-/** Digital steering ramp, units per second. */
-const STEER_ATTACK = 3.4;
-const STEER_RELEASE = 5.6;
+/**
+ * Steering feel, modelled on a real rack.
+ *
+ * `steerSmoothed` is the *steering wheel position*, not the road-wheel angle —
+ * `VehicleSim` converts one to the other and applies the speed-dependent lock
+ * limit. Keeping that split is what lets this file describe how a driver and a
+ * steering column behave, and leave the tyres to the physics.
+ *
+ * Three properties, all of which a real car has and the previous version did not:
+ *
+ * - **It self-centres.** Release the keys and caster action winds the wheel back
+ *   to straight on its own, rather than the wheel merely stopping where it was.
+ * - **Centring is faster than winding on.** Unwinding is assisted by the
+ *   geometry; winding on fights it. So `RETURN` is well above `ATTACK`, and
+ *   counter-steering through centre uses the return rate too.
+ * - **It gets heavier and stronger with speed.** At 200km/h the wheel resists
+ *   being turned and snaps back hard; at walking pace it does neither.
+ */
+const STEER_ATTACK = 2.4;
+const STEER_RETURN = 5.5;
+/** Extra self-centring at speed, added on top of `STEER_RETURN`. */
+const STEER_RETURN_SPEED_GAIN = 5;
+/** How much slower the wheel is to wind on at speed, 0-1. */
+const STEER_ATTACK_SPEED_TAPER = 0.45;
+/** Speed at which the speed-dependent terms saturate, m/s. */
+const STEER_REFERENCE_SPEED = 55;
 
 /** Analog stick noise floor. */
 const STICK_DEADZONE = 0.14;
@@ -79,15 +102,24 @@ export class InputManager {
     this.lastUsed = scheme;
   }
 
-  /** Called once per fixed step. Returns a reused object — do not retain it. */
-  sample(dt: number): VehicleInput {
+  /**
+   * Called once per fixed step. Returns a reused object — do not retain it.
+   *
+   * `speed` is the car's current ground speed in m/s, used only to taper
+   * steering authority. Pass 0 and the behaviour is the low-speed one.
+   */
+  sample(dt: number, speed = 0): VehicleInput {
     const out = this.output;
+    const speedRatio = clamp(speed / STEER_REFERENCE_SPEED, 0, 1);
 
     const pad = this.readGamepad();
     if (pad) {
       out.throttle = pad.throttle;
       out.brake = pad.brake;
       out.handbrake = pad.handbrake;
+      // A stick is already a proportional wheel position and it self-centres in
+      // the driver's hand, so it is passed straight through. The speed-dependent
+      // lock limit still applies, in `VehicleSim`.
       this.steerSmoothed = pad.steer;
       out.steer = toVehicleSteer(this.steerSmoothed);
       this.lastUsed = "gamepad";
@@ -108,20 +140,31 @@ export class InputManager {
     out.brake = keyBrake;
     out.handbrake = keyHandbrake;
 
-    // Digital keys ramp toward full lock so a tap is a nudge, not a snap.
-    const digitalTarget = keyRight - keyLeft;
-    if (digitalTarget !== 0) {
-      this.steerSmoothed = moveTowards(
-        this.steerSmoothed,
-        digitalTarget,
-        STEER_ATTACK * dt,
-      );
-    } else {
-      this.steerSmoothed = moveTowards(this.steerSmoothed, 0, STEER_RELEASE * dt);
-    }
+    // The wheel is heavier to turn the faster you are going, and springs back
+    // harder. Both are what make a car feel planted instead of twitchy.
+    const attack = STEER_ATTACK * (1 - STEER_ATTACK_SPEED_TAPER * speedRatio);
+    const centring = STEER_RETURN + STEER_RETURN_SPEED_GAIN * speedRatio;
+
+    const target = keyRight - keyLeft;
+    const unwinding =
+      target === 0 ||
+      // Asking for the opposite lock: the wheel has to come back through centre
+      // first, and caster is helping, so it unwinds at the centring rate.
+      (this.steerSmoothed !== 0 && Math.sign(target) !== Math.sign(this.steerSmoothed));
+
+    this.steerSmoothed = unwinding
+      ? // `moveTowards` lands exactly on zero, so releasing the keys genuinely
+        // returns to straight instead of asymptotically approaching it.
+        moveTowards(this.steerSmoothed, 0, centring * dt)
+      : moveTowards(this.steerSmoothed, target, attack * dt);
 
     out.steer = toVehicleSteer(this.steerSmoothed);
     return out;
+  }
+
+  /** Current steering wheel position, -1 to 1. Exposed for tests and the HUD. */
+  get steerPosition(): number {
+    return this.steerSmoothed;
   }
 
   reset(): void {

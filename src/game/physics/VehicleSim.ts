@@ -162,14 +162,18 @@ export class VehicleSim {
   /**
    * Advance one fixed step.
    *
-   * `groundHeight` and `groundSlope` come from the track projection; the sim
-   * stays agnostic about how they were obtained.
+   * `groundHeight`, `groundSlope` and `groundBanking` come from the track
+   * projection; the sim stays agnostic about how they were obtained.
+   *
+   * `groundBanking` is the road's crossfall in radians, positive when the
+   * right-hand edge is the high one.
    */
   step(
     input: VehicleInput,
     dt: number,
     groundHeight: number,
     groundSlope: number,
+    groundBanking = 0,
   ): void {
     const s = this.state;
     const t = this.tuning;
@@ -275,6 +279,13 @@ export class VehicleSim {
     vLong = provisionalVx * nextFx + provisionalVz * nextFz;
     vLat = provisionalVx * nextRx + provisionalVz * nextRz;
 
+    // Gravity across a banked surface, before the tyres get a say. With the
+    // right-hand edge high the car is pulled left, so the component along the
+    // car's right axis is negative. The layout banks into every corner, so this
+    // is what lets a committed line through a bend actually pay off instead of
+    // the banking being decoration.
+    if (s.onGround) vLat += -GRAVITY * Math.sin(groundBanking) * dt;
+
     const neededLatAccel = -vLat / dt;
     const appliedLatAccel = clamp(neededLatAccel, -maxLatAccel, maxLatAccel);
     vLat += appliedLatAccel * dt;
@@ -317,7 +328,17 @@ export class VehicleSim {
     s.slipAngle = s.speed > 1.5 ? Math.atan2(vLat, Math.abs(vLong)) : 0;
 
     // Body roll from lateral load, pitch from acceleration. Visual only.
-    const rollTarget = clamp(-appliedLatAccel / 30, -0.09, 0.09);
+    //
+    // A car leans *away* from the corner: in a right-hander the tyres push the
+    // chassis right, the sprung mass rolls left, and the right-hand side lifts.
+    // `CarView` rotates about the car's forward axis where a positive angle lifts
+    // the right side, so this term is positive. It used to be negated, which
+    // leaned the car into every corner like a motorcycle.
+    //
+    // Banking is added on top so the body sits parallel to the road through a
+    // banked corner instead of upright on a tilted plane.
+    const rollTarget =
+      clamp(appliedLatAccel / 30, -0.09, 0.09) + (s.onGround ? groundBanking : 0);
     s.roll = damp(s.roll, rollTarget, 7, dt);
     const pitchTarget = clamp(-aLong / 60, -0.045, 0.045);
     s.pitch = damp(s.pitch, pitchTarget, 6, dt);

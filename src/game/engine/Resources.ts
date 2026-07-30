@@ -1,11 +1,16 @@
 /**
  * Asset loading.
  *
- * The source car models are 25-37MB each. `scripts/optimize-assets.mjs` turns
- * them into Draco-compressed, WebP-textured GLBs under 2.5MB, so the loader here
- * has to be Draco-capable. The decoder itself is pulled from the pinned CDN copy
- * that ships with three's examples rather than bundled, because it is a WASM
- * blob most players will already have cached.
+ * A plain `GLTFLoader` with no decoder plugins, deliberately.
+ *
+ * `scripts/optimize-assets.mjs` turns the 24MB source car into 2MB using
+ * `KHR_mesh_quantization` for geometry and `EXT_texture_webp` for textures, and
+ * three.js decodes both natively. There used to be a `DRACOLoader` and a
+ * `KTX2Loader` wired in here for formats the pipeline never emits — verified
+ * against the shipped GLBs, whose only extensions are `EXT_texture_webp`,
+ * `KHR_mesh_quantization`, `KHR_materials_clearcoat` and `KHR_texture_transform`.
+ * Removing them takes two third-party CDN fetches and a WASM decoder off the race
+ * loading path, and takes the deprecated `setDecoderConfig` call with it.
  *
  * Loaded models are cached and cloned per car, and the cache survives across
  * races — reloading a 2MB GLB between attempts is the difference between an
@@ -21,16 +26,9 @@ import {
   Vector3,
   type Group,
   type Texture,
-  type WebGLRenderer,
 } from "three";
 import { GLTFLoader } from "three/examples/jsm/loaders/GLTFLoader.js";
-import { DRACOLoader } from "three/examples/jsm/loaders/DRACOLoader.js";
-import { KTX2Loader } from "three/examples/jsm/loaders/KTX2Loader.js";
 import { clone as cloneSkinned } from "three/examples/jsm/utils/SkeletonUtils.js";
-
-/** Version-pinned so a three upgrade cannot silently change the decoder. */
-const DRACO_DECODER_PATH = "https://www.gstatic.com/draco/versioned/decoders/1.5.7/";
-const KTX2_TRANSCODER_PATH = "https://unpkg.com/three@0.185.1/examples/jsm/libs/basis/";
 
 export interface LoadedModel {
   scene: Group;
@@ -40,23 +38,8 @@ export interface LoadedModel {
 
 export class Resources {
   private readonly loader = new GLTFLoader();
-  private readonly draco = new DRACOLoader();
-  private ktx2: KTX2Loader | null = null;
   private readonly cache = new Map<string, Promise<LoadedModel>>();
   private disposed = false;
-
-  constructor(renderer?: WebGLRenderer) {
-    this.draco.setDecoderPath(DRACO_DECODER_PATH);
-    this.draco.setDecoderConfig({ type: "js" });
-    this.loader.setDRACOLoader(this.draco);
-
-    if (renderer) {
-      this.ktx2 = new KTX2Loader()
-        .setTranscoderPath(KTX2_TRANSCODER_PATH)
-        .detectSupport(renderer);
-      this.loader.setKTX2Loader(this.ktx2);
-    }
-  }
 
   /**
    * Load a GLB, cached by URL.
@@ -164,8 +147,6 @@ export class Resources {
   dispose(): void {
     if (this.disposed) return;
     this.disposed = true;
-    this.draco.dispose();
-    this.ktx2?.dispose();
     this.cache.clear();
   }
 }

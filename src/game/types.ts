@@ -135,7 +135,9 @@ export type GameEvent =
   | { type: "finish"; result: RaceResult }
   | { type: "failed"; reason: FailureReason }
   | { type: "quality"; tier: QualityTier; reason: string }
-  | { type: "loaded" };
+  | { type: "loaded" }
+  /** A car model could not be fetched. The race runs on placeholders. */
+  | { type: "load-failed"; reason: string };
 
 export type FailureReason =
   | "drift-target-missed"
@@ -197,6 +199,12 @@ export interface GameBridge {
    * and return immediately — never await here.
    */
   onTick(tick: TickPayload): void;
+  /**
+   * Throttled snapshot for the HUD, published a few times a second rather than
+   * per frame. This is the only per-race value React is allowed to see, and the
+   * interval is what keeps the reconciler off the render path.
+   */
+  onTelemetry?(telemetry: Telemetry): void;
 }
 
 /** One rollup-bound state transition. */
@@ -227,19 +235,6 @@ export interface RaceConfig {
   reducedMotion: boolean;
 }
 
-/**
- * A HUD implementation the engine can drive.
- *
- * Implemented by the Pixi HUD. The engine calls `update` from its render step
- * rather than the HUD running its own animation frame, so there is one loop in
- * the app and the HUD can never be a frame out of step with the scene.
- */
-export interface HudLayer {
-  update(telemetry: Readonly<Telemetry>, dt: number): void;
-  resize(width: number, height: number): void;
-  destroy(): void;
-}
-
 export interface EngineHandle {
   start(): void;
   pause(): void;
@@ -248,7 +243,6 @@ export interface EngineHandle {
   retire(): void;
   /** Act IV: player banked the run at a lap boundary. */
   markBanked(): void;
-  setQuality(tier: QualityTier): void;
   setControls(scheme: ControlScheme): void;
   setVolume(volume: number): void;
   readonly telemetry: Readonly<Telemetry>;

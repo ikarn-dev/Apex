@@ -1,15 +1,18 @@
 /**
- * Deterministic circuit queries backed by the supplied Suzuka road mesh.
+ * Deterministic circuit queries.
  *
- * `scripts/prepare-map-assets.mjs` welds the source road topology, follows its
- * authored centre row, measures both mesh boundaries, selects the longest flat
- * straight as the start, and emits uniformly spaced samples. Runtime code only
- * reads that generated data: no procedural curve or hand-authored map remains.
+ * The geometry comes from `./layout`, which builds the closed centreline of APEX
+ * International from authored control points and normalises it to the calibrated
+ * lap distance. This class is the only thing the simulation asks about the road:
+ * where the surface is, how wide it is, which way it is banked, where the racing
+ * line runs and where the checkpoints sit.
  */
 
 import type { Vector3 } from "three";
-import routeData from "./generated/suzuka-route.json";
+import { buildRoute } from "./layout";
 import { clamp, lerp, wrapAngle } from "@/lib/math";
+
+const routeData = buildRoute();
 
 /** Gates per lap. Also the granularity of rollup checkpoint writes. */
 export const CHECKPOINTS_PER_LAP = 12;
@@ -55,9 +58,7 @@ export interface TrackProjection {
   progress: number;
 }
 
-type GeneratedSample = [number, number, number, number, number];
-
-/** Tangents use a 15m baseline so source-mesh triangulation cannot steer AI. */
+/** Tangents use a 15m baseline so resampling noise cannot steer the AI. */
 const TANGENT_WINDOW = 3;
 
 export class Track {
@@ -74,10 +75,10 @@ export class Track {
     this.sampleSpacing = routeData.sampleSpacing;
     this.length = routeData.length;
 
-    const points = routeData.samples as GeneratedSample[];
+    const points = routeData.samples;
     const n = points.length;
     if (n < 64 || this.sampleSpacing <= 0 || this.length <= 0) {
-      throw new Error("Generated Suzuka route data is invalid");
+      throw new Error("Circuit layout produced an invalid route");
     }
 
     let maxRadius = 0;

@@ -118,6 +118,8 @@ export function buildWorld(
   quality: QualitySettings,
   trackRadius: number,
   renderer: WebGLRenderer,
+  /** Height the circuit's run-off banks down to. The ground plane sits here. */
+  groundHeight: number,
 ): WorldResult {
   const scene = new Scene();
   scene.background = new Color(env.fog);
@@ -147,10 +149,13 @@ export function buildWorld(
   });
   const ground = new Mesh(groundGeometry, groundMaterial);
   ground.rotation.x = -Math.PI / 2;
-  // Below the lowest possible track elevation so it never pokes through.
-  ground.position.y = -80;
+  // A shade under the height the circuit's run-off banks down to. The two used to
+  // disagree — ground sat 80m below a circuit that climbs and drops 30m, so the
+  // horizon read as a void under a floating road. Matching them closes it, and
+  // the small offset keeps the two surfaces from z-fighting where they meet.
+  ground.position.y = groundHeight - 0.15;
   ground.name = "ground";
-  ground.receiveShadow = false;
+  ground.receiveShadow = quality.shadowMapSize > 0;
   dressing.add(ground);
   disposables.push(groundGeometry, groundMaterial);
 

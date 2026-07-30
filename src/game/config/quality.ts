@@ -5,6 +5,10 @@
  * that stutters, a wrong guess downward means slightly softer shadows. The
  * runtime governor may only ever *demote* a tier, never promote, so a machine
  * that thermally throttles settles instead of oscillating.
+ *
+ * Only knobs the renderer actually reads live here. `bloom`, `propDensity`,
+ * `particleBudget` and `envProbe` were declared and never consumed by anything;
+ * they are gone rather than left as documentation of features that do not exist.
  */
 
 export type QualityTier = "low" | "medium" | "high";
@@ -13,23 +17,22 @@ export interface QualitySettings {
   tier: QualityTier;
   /** Upper bound on devicePixelRatio. */
   maxPixelRatio: number;
-  /** 0 disables shadow mapping entirely. */
+  /** Shadow map resolution. 0 disables shadow mapping entirely. */
   shadowMapSize: number;
-  bloom: boolean;
   /** Antialiasing in the WebGL context. */
   antialias: boolean;
-  /** Rival cars actually spawned, capped from the level definition. */
+  /**
+   * Rival cars actually spawned, capped from the level definition.
+   *
+   * This is a draw-call budget, not a gameplay one. The car ships with its real
+   * textures, so a rival costs ~31 draw calls and the player's rigged car ~52;
+   * five rivals is about 200 calls for the field before the circuit is drawn.
+   */
   maxRivals: number;
-  /** Roadside props drawn per side. */
-  propDensity: number;
-  /** Tyre-smoke particle budget. */
-  particleBudget: number;
   /** Anisotropic filtering cap. */
   anisotropy: number;
   /** Camera far plane, metres. Pairs with fog density. */
   drawDistance: number;
-  /** Reflections on car bodywork. */
-  envProbe: boolean;
 }
 
 export const QUALITY_PRESETS: Record<QualityTier, QualitySettings> = {
@@ -37,40 +40,28 @@ export const QUALITY_PRESETS: Record<QualityTier, QualitySettings> = {
     tier: "low",
     maxPixelRatio: 1,
     shadowMapSize: 0,
-    bloom: false,
     antialias: false,
-    maxRivals: 3,
-    propDensity: 6,
-    particleBudget: 0,
+    maxRivals: 2,
     anisotropy: 1,
-    drawDistance: 600,
-    envProbe: false,
+    drawDistance: 650,
   },
   medium: {
     tier: "medium",
     maxPixelRatio: 1.25,
-    shadowMapSize: 512,
-    bloom: false,
+    shadowMapSize: 1024,
     antialias: false,
-    maxRivals: 5,
-    propDensity: 14,
-    particleBudget: 48,
-    anisotropy: 2,
-    drawDistance: 900,
-    envProbe: false,
+    maxRivals: 3,
+    anisotropy: 4,
+    drawDistance: 950,
   },
   high: {
     tier: "high",
     maxPixelRatio: 2,
-    shadowMapSize: 1024,
-    bloom: true,
+    shadowMapSize: 2048,
     antialias: true,
     maxRivals: 5,
-    propDensity: 26,
-    particleBudget: 128,
-    anisotropy: 4,
+    anisotropy: 8,
     drawDistance: 1400,
-    envProbe: true,
   },
 };
 

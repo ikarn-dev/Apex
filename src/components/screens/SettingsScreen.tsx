@@ -2,7 +2,7 @@
 
 import { Panel, PanelHeader, Badge } from "@/components/ui/Panel";
 import { Button } from "@/components/ui/Button";
-import { QUALITY_PRESETS, TIER_ORDER } from "@/game/config/quality";
+import { QUALITY_PRESETS } from "@/game/config/quality";
 import type { ControlScheme } from "@/game/types";
 import { detectQualityTier } from "@/lib/device";
 import { useDeviceProfile } from "@/hooks/useDeviceProfile";
@@ -74,9 +74,7 @@ export function SettingsScreen() {
   // Device probing touches browser globals, so it yields null on the server.
   const device = useDeviceProfile();
   const detected = device ? detectQualityTier(device) : null;
-
-  const activeTier = settings.qualityOverride ?? detected ?? "medium";
-  const preset = QUALITY_PRESETS[activeTier];
+  const preset = detected ? QUALITY_PRESETS[detected] : null;
 
   return (
     <div className="mx-auto w-full max-w-4xl px-4 py-8 sm:px-6 sm:py-12">
@@ -86,49 +84,32 @@ export function SettingsScreen() {
           Tuning
         </h1>
         <p className="mt-2 max-w-2xl text-xs leading-relaxed text-fog">
-          Quality is auto-detected from your device and then adjusted at runtime
-          if frames start dropping. The governor only ever lowers quality —
-          raising it again would make the resolution pump on a device that is
-          thermally throttling.
+          Graphics are not a setting. The tier is detected from your device and
+          then lowered automatically if frames start dropping — the governor never
+          raises it again, because a device that just recovered would fall over
+          immediately and the player would watch the resolution pump.
         </p>
       </header>
 
       <Panel className="mt-8 p-0">
         <PanelHeader
           label="Graphics"
-          action={
-            detected ? (
-              <Badge tone="fog">
-                Detected: {detected}
-                {settings.qualityOverride ? " · overridden" : ""}
-              </Badge>
-            ) : null
-          }
+          action={detected ? <Badge tone="fog">Automatic · {detected}</Badge> : null}
         />
         <div className="divide-y divide-steel">
           <Row
-            label="Quality tier"
-            hint={`DPR cap ${preset.maxPixelRatio}× · shadows ${
-              preset.shadowMapSize || "off"
-            } · bloom ${preset.bloom ? "on" : "off"} · ${preset.maxRivals} rivals`}
+            label="Detected profile"
+            hint={
+              preset
+                ? `DPR cap ${preset.maxPixelRatio}× · shadows ${
+                    preset.shadowMapSize || "off"
+                  } · ${preset.drawDistance}m draw · ${preset.maxRivals} rivals`
+                : "Probing your device…"
+            }
           >
-            <Button
-              variant={settings.qualityOverride === null ? "primary" : "secondary"}
-              size="sm"
-              onClick={() => settings.setQuality(null)}
-            >
-              Auto
-            </Button>
-            {TIER_ORDER.map((tier) => (
-              <Button
-                key={tier}
-                variant={settings.qualityOverride === tier ? "primary" : "secondary"}
-                size="sm"
-                onClick={() => settings.setQuality(tier)}
-              >
-                {tier}
-              </Button>
-            ))}
+            <span className="font-mono text-[10px] uppercase tracking-[0.14em] text-fog">
+              {detected ?? "—"}
+            </span>
           </Row>
 
           <Row
@@ -260,7 +241,8 @@ export function SettingsScreen() {
             </Row>
             <Row label="Pixel ratio">
               <code className="font-mono text-[11px] text-chalk">
-                {device.pixelRatio}× (capped at {preset.maxPixelRatio}×)
+                {device.pixelRatio}×
+                {preset ? ` (capped at ${preset.maxPixelRatio}×)` : null}
               </code>
             </Row>
             <Row label="WebGL 2">

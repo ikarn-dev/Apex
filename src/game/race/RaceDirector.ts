@@ -45,6 +45,15 @@ const COUNTDOWN_SECONDS = 3.2;
 /** Restitution when hitting the road edge. */
 const WALL_RESTITUTION = 0.28;
 
+/**
+ * How far past the road edge a car must be before the edge solver stops trusting
+ * its cached projection hint and searches the whole circuit instead.
+ *
+ * Generous enough that ordinary barrier contact never pays for a full search,
+ * tight enough that a containment failure is caught on the step it happens.
+ */
+const RECOVERY_SEARCH_MARGIN = 12;
+
 /** Impact speed below which contact is not counted as a collision. */
 const COLLISION_THRESHOLD = 3.5;
 
@@ -382,8 +391,8 @@ export class RaceDirector {
       const sample = this.track.sampleAt(racer.trackIndex);
       // `projection.height` is refined along the tangent, so the surface under
       // the car is continuous between samples rather than stepping every 2.5m.
-      racer.sim.step(input, dt, projection.height, sample.slope);
-      this.resolveTrackEdge(racer, sample.halfWidth);
+      racer.sim.step(input, dt, projection.height, sample.slope, sample.banking);
+      this.resolveTrackEdge(racer);
       if (!held) this.resolveStuck(racer, dt);
     }
   }
@@ -445,12 +454,41 @@ export class RaceDirector {
    * Besides being the obvious arcade behaviour, this is what makes the
    * derived-progress model safe: a car cannot leave the ribbon, so it cannot
    * shortcut a corner and claim arc length it did not cover.
+   *
+   * Three things had to be true for a car to actually stay in, and only the
+   * first was:
+   *
+   * 1. The wall is where the barrier is drawn. The limit is the measured
+   *    half-width less the car's *full* half-width, so the car stops with its
+   *    flank against the barrier face rather than 40% of the way through it.
+   * 2. The width and the offset come from the *same* sample. They used to
+   *    disagree: the offset was re-projected here while the width was passed in
+   *    from the caller's cached `trackIndex`. On a corner where the road narrows,
+   *    that let a car through the barrier by the difference between the two.
+   * 3. A car already outside can be found again. `project` searches a ±24 sample
+   *    window around a hint, which is an optimisation that becomes a trap — once
+   *    a car is off the ribbon the nearest sample may be outside that window, so
+   *    the clamp starts measuring against the wrong part of the circuit and the
+   *    car free-roams. A far-outside car now gets a full search before clamping.
    */
-  private resolveTrackEdge(racer: Racer, halfWidth: number): void {
+  private resolveTrackEdge(racer: Racer): void {
     const state = racer.sim.state;
-    const projection = this.track.project(state.x, state.z, racer.trackIndex);
     const car = CARS[racer.carId];
-    const limit = halfWidth - car.tuning.halfWidth * 0.6;
+
+    let projection = this.track.project(state.x, state.z, racer.trackIndex);
+    let sample = this.track.sampleAt(projection.index);
+    let escaped = false;
+
+    // Gross containment failure: re-derive from a global search so recovery is
+    // always possible, and re-seed the hint so the next step is local again.
+    if (Math.abs(projection.lateral) > sample.halfWidth + RECOVERY_SEARCH_MARGIN) {
+      projection = this.track.project(state.x, state.z, -1);
+      sample = this.track.sampleAt(projection.index);
+      racer.trackIndex = projection.index;
+      escaped = true;
+    }
+
+    const limit = sample.halfWidth - car.tuning.halfWidth;
 
     if (Math.abs(projection.lateral) <= limit) {
       if (racer.isPlayer && this.telemetry.offTrack) {
@@ -461,13 +499,21 @@ export class RaceDirector {
       return;
     }
 
-    const sample = this.track.sampleAt(projection.index);
     const side = Math.sign(projection.lateral) || 1;
 
     // Push back to the edge and reflect off the inward normal.
     const overshoot = Math.abs(projection.lateral) - limit;
     state.x -= sample.rx * side * overshoot;
     state.z -= sample.rz * side * overshoot;
+
+    // Only put the car back on the surface when it had genuinely left the
+    // circuit. Doing it on every contact would flatten the car onto the road
+    // mid-jump, and grazing a barrier over a crest is normal.
+    if (escaped) {
+      state.y = projection.height + side * limit * Math.tan(sample.banking);
+      state.vy = 0;
+      state.onGround = true;
+    }
 
     const impact = racer.sim.applyWallImpact(
       -sample.rx * side,

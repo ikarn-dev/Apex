@@ -2,7 +2,7 @@
   "name": "apex-zero-latency",
   "version": "0.1.0",
   "private": true,
-  "description": "APEX: Zero Latency — a Solana racing game powered by MagicBlock Ephemeral Rollups",
+  "description": "APEX: Zero Latency \u2014 a Solana racing game powered by MagicBlock Ephemeral Rollups",
   "engines": {
     "node": ">=20.9.0"
   },
@@ -12,14 +12,18 @@
     "start": "next start",
     "lint": "eslint",
     "typecheck": "tsc --noEmit",
-    "assets:optimize": "node scripts/optimize-assets.mjs && node scripts/prepare-map-assets.mjs",
-    "maps:prepare": "node scripts/prepare-map-assets.mjs",
+    "assets:optimize": "node scripts/optimize-assets.mjs",
     "assets:inspect": "node scripts/inspect-assets.mjs",
+    "circuit:inspect": "tsx scripts/inspect-circuit.ts",
     "test:sim": "tsx scripts/smoke-sim.ts",
     "calibrate": "tsx scripts/calibrate-levels.ts",
     "program:check": "cargo check --lib -p apex-racing",
     "program:build": "cargo build-sbf --manifest-path programs/apex_racing/Cargo.toml",
-    "verify": "npm run typecheck && npm run lint && npm run test:sim && npm run build"
+    "verify": "npm run typecheck && npm run lint && npm run assets:inspect && npm run test:sim && npm run test:containment && npm run test:steering && npm run test:view && npm run test:rig && npm run build",
+    "test:containment": "tsx scripts/smoke-containment.ts",
+    "test:view": "tsx scripts/smoke-circuit-view.ts",
+    "test:rig": "tsx scripts/smoke-car-rig.mts",
+    "test:steering": "tsx scripts/smoke-steering.ts"
   },
   "dependencies": {
     "@coral-xyz/anchor": "0.32.1",
@@ -31,7 +35,6 @@
     "bs58": "6.0.0",
     "clsx": "2.1.1",
     "next": "16.2.12",
-    "pixi.js": "8.19.0",
     "react": "19.2.8",
     "react-dom": "19.2.8",
     "tailwind-merge": "3.6.0",

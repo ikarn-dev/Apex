@@ -29,7 +29,6 @@ import type {
   ControlScheme,
   EngineHandle,
   GameBridge,
-  HudLayer,
   RaceConfig,
   Telemetry,
 } from "../types";
@@ -43,6 +42,8 @@ import { clamp, lerp } from "@/lib/math";
 
 /** Clamp on catch-up work after a stall, ms. */
 const MAX_FRAME_MS = 100;
+/** HUD publication interval. Rendering itself stays independent of it. */
+const TELEMETRY_INTERVAL_SECONDS = 0.1;
 
 export interface EngineOptions {
   canvas: HTMLCanvasElement;
@@ -86,13 +87,12 @@ export class Engine implements EngineHandle {
   private running = false;
   private paused = false;
   private disposed = false;
+  private modelsReady = false;
 
   private fpsAccumulator = 0;
   private fpsFrames = 0;
   private lastCountdownValue = -1;
-
-  /** Optional canvas HUD, driven from `render`. */
-  private hud: HudLayer | null = null;
+  private telemetryAccumulator = 0;
 
   private readonly scratch = new Vector3();
   /** Fixed offset of the shadow light from the player. */
@@ -113,7 +113,7 @@ export class Engine implements EngineHandle {
     this.renderer = new Renderer(options.canvas, quality, {
       onDemoteRequested: (reason) => this.handleDemote(reason),
     });
-    this.resources = new Resources(this.renderer.renderer);
+    this.resources = new Resources();
 
     this.director = new RaceDirector({
       level,
@@ -124,16 +124,19 @@ export class Engine implements EngineHandle {
       practice: options.config.practice,
     });
 
+    // The circuit is generated from the route, and its run-off decides where the
+    // ground plane belongs, so it is built before the world that has to meet it.
+    this.circuit = new CircuitView(this.director.track, level.env, quality);
+
     this.world = buildWorld(
       level.env,
       quality,
       this.director.track.boundsRadius,
       this.renderer.renderer,
+      this.circuit.groundHeight,
     );
     this.scene = this.world.scene;
     this.disposeWorld = this.world.dispose;
-
-    this.circuit = new CircuitView(this.director.track, quality);
     this.scene.add(this.circuit.group);
 
     this.carGroup.name = "cars";
@@ -156,14 +159,13 @@ export class Engine implements EngineHandle {
   /**
    * Pick a detail level per car.
    *
-   * The player always gets the best the tier allows, because that is the car on
-   * screen for the whole race. Rivals get the reduced model, or blocked-out
-   * primitives on LOW — see `CarDetail` for the draw-call measurement behind
-   * that.
+   * The player always gets the rigged variant: it is the car on screen for the
+   * whole race, and it is the only one whose wheels and steering are close enough
+   * to read. Rivals get the same model and the same textures with the rig
+   * collapsed, which is where the draw-call saving comes from.
    */
   private detailFor(isPlayer: boolean): CarDetail {
-    if (isPlayer) return this.quality === "high" ? "hq" : "lq";
-    return this.quality === "low" ? "placeholder" : "lq";
+    return isPlayer ? "hq" : "lq";
   }
 
   private buildCarViews(): void {
@@ -197,19 +199,38 @@ export class Engine implements EngineHandle {
    * green light.
    */
   private async loadModels(): Promise<void> {
-    await Promise.all([
-      ...this.visuals.map((visual) => visual.view.attachModel(this.resources)),
-      this.circuit.load(this.resources),
-    ]);
+    // Only the cars are downloaded. The circuit is generated, so it is complete
+    // before the first frame and has nothing to wait for.
+    //
+    // `allSettled`, not `all`: one car failing must not leave the rest of the
+    // field as placeholders forever, and the race still has to be startable. But
+    // the failure is reported rather than swallowed.
+    const results = await Promise.allSettled(
+      this.visuals.map((visual) => visual.view.attachModel(this.resources)),
+    );
     if (this.disposed) return;
+
+    const failure = results.find((result) => result.status === "rejected");
+    if (failure && failure.status === "rejected") {
+      const reason =
+        failure.reason instanceof Error ? failure.reason.message : String(failure.reason);
+      this.bridge.onEvent({ type: "load-failed", reason });
+    }
+
+    this.modelsReady = true;
+    this.bridge.onTelemetry?.({ ...this.director.telemetry });
     this.bridge.onEvent({ type: "loaded" });
+  }
+
+  /** Whether every car has finished attaching its model (or failed trying). */
+  get ready(): boolean {
+    return this.modelsReady;
   }
 
   private observeResize(): void {
     const apply = () => {
       const rect = this.container.getBoundingClientRect();
       this.renderer.resize(rect.width, rect.height);
-      this.hud?.resize(rect.width, rect.height);
     };
     apply();
 
@@ -289,12 +310,7 @@ export class Engine implements EngineHandle {
     this.director.markBanked();
   }
 
-  setQuality(tier: QualityTier): void {
-    if (tier === this.quality) return;
-    this.quality = tier;
-    this.renderer.setQuality(QUALITY_PRESETS[tier]);
-    this.bridge.onEvent({ type: "quality", tier, reason: "user" });
-  }
+
 
   setControls(scheme: ControlScheme): void {
     this.config = { ...this.config, controls: scheme };
@@ -382,7 +398,9 @@ export class Engine implements EngineHandle {
   };
 
   private step(dt: number): void {
-    this.director.setPlayerInput(this.input.sample(dt));
+    this.director.setPlayerInput(
+      this.input.sample(dt, this.director.player.sim.state.speed),
+    );
     this.director.update(dt);
 
     const countdown = this.director.telemetry.countdown;
@@ -450,17 +468,14 @@ export class Engine implements EngineHandle {
     );
 
     this.renderer.render(this.scene);
-    // Drawn after the scene so it composites on top, and in the same frame so
-    // the gauges can never lag the road.
-    this.hud?.update(this.director.telemetry, dt);
-  }
 
-  /** Attach or replace the canvas HUD. Pass `null` to use the DOM fallback. */
-  setHud(hud: HudLayer | null): void {
-    this.hud = hud;
-    if (hud) {
-      const rect = this.container.getBoundingClientRect();
-      hud.resize(rect.width, rect.height);
+    // The HUD is DOM, so it is fed a snapshot on an interval instead of being
+    // drawn in this frame. Ten shallow copies a second is measurably cheaper than
+    // a second GL context, and it keeps React off the render path entirely.
+    this.telemetryAccumulator += dt;
+    if (this.telemetryAccumulator >= TELEMETRY_INTERVAL_SECONDS) {
+      this.telemetryAccumulator %= TELEMETRY_INTERVAL_SECONDS;
+      this.bridge.onTelemetry?.({ ...this.director.telemetry });
     }
   }
 
@@ -482,8 +497,6 @@ export class Engine implements EngineHandle {
 
     this.input.detach();
     this.audio.dispose();
-    this.hud?.destroy();
-    this.hud = null;
     this.resizeObserver?.disconnect();
 
     for (const visual of this.visuals) visual.view.dispose();

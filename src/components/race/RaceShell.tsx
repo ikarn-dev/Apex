@@ -27,13 +27,13 @@ import { ConnectButton } from "@/components/wallet/ConnectButton";
 import { ResultsOverlay, type SettleState } from "./ResultsOverlay";
 import { SessionPanel } from "./SessionPanel";
 import { StoryStrip } from "./StoryStrip";
+import { LightweightHud, useHudPopups } from "./LightweightHud";
 import { Engine } from "@/game/engine/Engine";
-import { PixiHud } from "@/game/hud/PixiHud";
 import { CARS, CAR_INDEX } from "@/game/config/cars";
 import { LEVEL_INDEX, type LevelDefinition } from "@/game/config/levels";
 import { QUALITY_PRESETS } from "@/game/config/quality";
 import { CHECKPOINTS_PER_LAP } from "@/game/track/Track";
-import type { ControlScheme, GameBridge, GameEvent } from "@/game/types";
+import type { ControlScheme, GameBridge, GameEvent, Telemetry } from "@/game/types";
 import { detectQualityTier, getDeviceProfile } from "@/lib/device";
 import { generateSeed } from "@/lib/rng";
 import { formatNumber } from "@/lib/format";
@@ -53,12 +53,13 @@ export function RaceShell({ level }: { level: LevelDefinition }) {
 
   const containerRef = useRef<HTMLDivElement>(null);
   const sceneCanvasRef = useRef<HTMLCanvasElement>(null);
-  const hudCanvasRef = useRef<HTMLCanvasElement>(null);
 
   const engineRef = useRef<Engine | null>(null);
-  const hudRef = useRef<PixiHud | null>(null);
   const sessionRef = useRef<ErSession | null>(null);
   const seedRef = useRef<bigint>(generateSeed());
+
+  const { popups, spawnPopup } = useHudPopups();
+  const [telemetry, setTelemetry] = useState<Telemetry | null>(null);
 
   const wallet = useWalletBridge();
   const { refresh: refreshProfile } = useDriverProfile();
@@ -82,14 +83,17 @@ export function RaceShell({ level }: { level: LevelDefinition }) {
   const [stage, setStage] = useState<Stage>("briefing");
   const [paused, setPaused] = useState(false);
   const [modelsLoaded, setModelsLoaded] = useState(false);
+  const [modelError, setModelError] = useState<string | null>(null);
   const [openError, setOpenError] = useState<string | null>(null);
   const [settleState, setSettleState] = useState<SettleState>("idle");
   const [settleError, setSettleError] = useState<string | null>(null);
   const [baseSignature, setBaseSignature] = useState<string | null>(null);
   const [pendingRunId, setPendingRunId] = useState<string | null>(null);
 
+  // Detected once, then owned by the engine's frame-time governor, which may only
+  // demote. There is no user override to reconcile with.
   const device = typeof window === "undefined" ? null : getDeviceProfile();
-  const tier = settings.qualityOverride ?? (device ? detectQualityTier(device) : "medium");
+  const tier = device ? detectQualityTier(device) : "medium";
   const preset = QUALITY_PRESETS[tier];
 
   const controls: ControlScheme = settings.controls ?? "keyboard";
@@ -120,7 +124,7 @@ export function RaceShell({ level }: { level: LevelDefinition }) {
           race.setLapTimes(event.lapMs, engineRef.current?.telemetry.bestLapMs ?? 0);
           // Act IV: banking is offered at each lap line.
           if (level.bankingEnabled && chainRun) race.setBankAvailable(true);
-          hudRef.current?.spawnPopup(
+          spawnPopup(
             event.best ? "BEST LAP" : `LAP ${event.lap}`,
             event.best ? "xp" : "drift",
           );
@@ -129,13 +133,13 @@ export function RaceShell({ level }: { level: LevelDefinition }) {
         case "position":
           race.setPosition(event.position, engineRef.current?.telemetry.totalRacers ?? 1);
           if (event.position < event.previous) {
-            hudRef.current?.spawnPopup("OVERTAKE +25", "xp");
+            spawnPopup("OVERTAKE +25", "xp");
           }
           break;
 
         case "drift-end":
           if (event.score > 40) {
-            hudRef.current?.spawnPopup(
+            spawnPopup(
               `+${formatNumber(event.score)}  x${event.multiplier}`,
               "drift",
             );
@@ -144,7 +148,7 @@ export function RaceShell({ level }: { level: LevelDefinition }) {
 
         case "collision":
           engineRef.current?.registerImpact(event.severity);
-          hudRef.current?.spawnPopup("CONTACT", "penalty");
+          spawnPopup("CONTACT", "penalty");
           break;
 
         case "story":
@@ -155,11 +159,16 @@ export function RaceShell({ level }: { level: LevelDefinition }) {
           setModelsLoaded(true);
           break;
 
+        case "load-failed":
+          // The race is still playable on placeholders, so this is a warning on
+          // the briefing rather than a hard failure.
+          setModelError(event.reason);
+          break;
+
         case "quality":
-          // Only surface automatic demotions; a user change is not news.
-          if (event.reason !== "user") {
-            race.setStory("SYSTEM", `Quality reduced to ${event.tier} — ${event.reason}.`);
-          }
+          // Only the governor emits this now, and it only ever demotes, so every
+          // one of these is worth telling the player about.
+          race.setStory("SYSTEM", `Quality reduced to ${event.tier} — ${event.reason}.`);
           break;
 
         case "failed":
@@ -225,7 +234,16 @@ export function RaceShell({ level }: { level: LevelDefinition }) {
           break;
       }
     },
-    [chainRun, creditLocalXp, level.bankingEnabled, level.laps, queuePendingRun, raceStore, sessionStore],
+    [
+      chainRun,
+      creditLocalXp,
+      level.bankingEnabled,
+      level.laps,
+      queuePendingRun,
+      raceStore,
+      sessionStore,
+      spawnPopup,
+    ],
   );
 
   /** Create the engine once. Renders immediately; starts on the player's cue. */
@@ -234,9 +252,6 @@ export function RaceShell({ level }: { level: LevelDefinition }) {
     const canvas = sceneCanvasRef.current;
     if (!container || !canvas) return;
 
-    let cancelled = false;
-    let pendingHud: PixiHud | null = null;
-
     const bridge: GameBridge = {
       onEvent: handleEvent,
       onTick: (payload) => {
@@ -244,6 +259,9 @@ export function RaceShell({ level }: { level: LevelDefinition }) {
         // the render loop.
         sessionRef.current?.tick(payload);
       },
+      // Already throttled to ~10Hz by the engine, so this is the only per-race
+      // value that reaches React.
+      onTelemetry: setTelemetry,
     };
 
     // Deliberately not wrapped in try/catch. If the WebGL context cannot be
@@ -269,42 +287,11 @@ export function RaceShell({ level }: { level: LevelDefinition }) {
     engineRef.current = engine;
     document.body.dataset.race = "active";
 
-    // Pixi HUD is async (it initialises its own GL context), so it attaches once
-    // ready rather than blocking the first frame. A late resolution after
-    // unmount is destroyed instead of being attached to a disposed engine.
-    if (hudCanvasRef.current) {
-      const hud = new PixiHud({
-        canvas: hudCanvasRef.current,
-        accent: level.env.accent,
-        showSessionPanel: chainRun,
-      });
-      pendingHud = hud;
-      const rect = container.getBoundingClientRect();
-      void hud
-        .init(rect.width, rect.height)
-        .then(() => {
-          if (cancelled || engineRef.current !== engine) {
-            hud.destroy();
-            return;
-          }
-          pendingHud = null;
-          hudRef.current = hud;
-          engine.setHud(hud);
-        })
-        .catch(() => {
-          pendingHud = null;
-          hud.destroy();
-        });
-    }
-
     return () => {
-      cancelled = true;
-      pendingHud?.destroy();
-      pendingHud = null;
       document.body.removeAttribute("data-race");
       engine.dispose();
       engineRef.current = null;
-      hudRef.current = null;
+      setTelemetry(null);
     };
     // Engine identity must not depend on changing settings; volume and quality
     // are pushed in through setters below instead.
@@ -315,10 +302,6 @@ export function RaceShell({ level }: { level: LevelDefinition }) {
   useEffect(() => {
     engineRef.current?.setVolume(settings.masterVolume);
   }, [settings.masterVolume]);
-
-  useEffect(() => {
-    engineRef.current?.setQuality(tier);
-  }, [tier]);
 
   useEffect(() => {
     engineRef.current?.setControls(controls);
@@ -365,7 +348,10 @@ export function RaceShell({ level }: { level: LevelDefinition }) {
 
   const beginRace = useCallback(async () => {
     const engine = engineRef.current;
-    if (!engine) return;
+    // `ready` is also checked here, not just on the button: the chain path awaits
+    // a wallet approval, and the button's disabled state is not authoritative
+    // across that await.
+    if (!engine || !engine.ready) return;
 
     if (!chainRun) {
       sessionStore.getState().setPhase(practice ? "idle" : "simulated");
@@ -453,13 +439,13 @@ export function RaceShell({ level }: { level: LevelDefinition }) {
         });
       }
       store.setPhase("live");
-      hudRef.current?.spawnPopup("BANKED", "xp");
+      spawnPopup("BANKED", "xp");
     } catch (error) {
       sessionStore
         .getState()
         .fail(error instanceof Error ? error.message : String(error));
     }
-  }, [raceStore, sessionStore]);
+  }, [raceStore, sessionStore, spawnPopup]);
 
   /** Commit and undelegate, then claim onto the profile. */
   const settleRun = useCallback(async () => {
@@ -552,28 +538,29 @@ export function RaceShell({ level }: { level: LevelDefinition }) {
     engineRef.current?.retire();
   }, []);
 
-  // Keep the Pixi HUD's session line in step with the store.
+  // Rollup status line for the HUD. Derived from the store rather than pushed
+  // into the HUD imperatively, which is the whole reason the DOM HUD is simpler
+  // than the canvas one it replaced.
   const sessionPhase = useSession((s) => s.phase);
   const ticksLanded = useSession((s) => s.ticksLanded);
-  useEffect(() => {
-    const label =
-      sessionPhase === "live"
+  const sessionLabel =
+    sessionPhase === "idle"
+      ? null
+      : sessionPhase === "live"
         ? `ER LIVE · ${formatNumber(ticksLanded)} ticks`
         : sessionPhase === "simulated"
           ? "SIMULATION"
           : sessionPhase === "error"
             ? "ER ERROR"
             : sessionPhase.toUpperCase();
-    const tone =
-      sessionPhase === "live"
-        ? "live"
-        : sessionPhase === "error"
-          ? "error"
-          : sessionPhase === "simulated"
-            ? "warn"
-            : "idle";
-    hudRef.current?.setSessionStatus(label, tone);
-  }, [sessionPhase, ticksLanded]);
+  const sessionTone =
+    sessionPhase === "live"
+      ? "live"
+      : sessionPhase === "error"
+        ? "error"
+        : sessionPhase === "simulated"
+          ? "warn"
+          : "idle";
 
   const car = CARS[selectedCar];
   const showResults = phase === "finished" || phase === "failed";
@@ -583,10 +570,15 @@ export function RaceShell({ level }: { level: LevelDefinition }) {
   return (
     <div ref={containerRef} className="relative h-dvh w-full overflow-hidden bg-void">
       <canvas ref={sceneCanvasRef} className="absolute inset-0 block size-full" />
-      <canvas
-        ref={hudCanvasRef}
-        className="pointer-events-none absolute inset-0 z-10 block size-full"
-      />
+
+      {stage === "running" && !showResults ? (
+        <LightweightHud
+          telemetry={telemetry}
+          popups={popups}
+          sessionLabel={sessionLabel}
+          sessionTone={sessionTone}
+        />
+      ) : null}
 
       <StoryStrip />
 
@@ -655,8 +647,14 @@ export function RaceShell({ level }: { level: LevelDefinition }) {
             </Badge>
             <Badge tone="fog">{tier} quality</Badge>
             <Badge tone="fog">{controls}</Badge>
-            {!modelsLoaded ? <Badge tone="fog">Loading models…</Badge> : null}
+            {!modelsLoaded ? <Badge tone="fog">Loading cars…</Badge> : null}
           </div>
+
+          {modelError ? (
+            <p className="mt-4 border-l-2 border-amber pl-3 text-[11px] leading-relaxed text-amber">
+              {modelError} — the race will run with blocked-out stand-in cars.
+            </p>
+          ) : null}
 
           {!chainRun && !practice && level.erEnabled && CHAIN_ENABLED && !wallet ? (
             <div className="mt-4 flex flex-col gap-2 sm:flex-row sm:items-center">
@@ -674,8 +672,18 @@ export function RaceShell({ level }: { level: LevelDefinition }) {
           ) : null}
 
           <div className="mt-6 flex flex-col gap-2 sm:flex-row">
-            <Button variant="primary" size="lg" onClick={() => void beginRace()}>
-              {chainRun ? "Jack in" : "Start"}
+            {/*
+              Held until every car has attached its model. The grid used to be
+              startable immediately, so a race that began before the GLBs arrived
+              lined up blocked-out primitives against the player.
+            */}
+            <Button
+              variant="primary"
+              size="lg"
+              disabled={!modelsLoaded}
+              onClick={() => void beginRace()}
+            >
+              {!modelsLoaded ? "Loading…" : chainRun ? "Jack in" : "Start"}
             </Button>
             <ButtonLink href="/campaign" variant="ghost" size="lg">
               Back

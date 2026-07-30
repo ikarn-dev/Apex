@@ -1,0 +1,20 @@
+Model Information
+=================
+
+Title: 2020 Aston Martin DBS GT Zagato | www.vecarz.com
+Source: https://sketchfab.com/3d-models/2020-aston-martin-dbs-gt-zagato-wwwvecarzcom-7fe14e7e14dd49bd877caf919d396f31
+Author: vecarz — https://sketchfab.com/heynic
+
+License
+=======
+
+CC BY-NC-SA 4.0
+https://creativecommons.org/licenses/by-nc-sa/4.0/
+
+Author attribution is required. Commercial use is not permitted. Modified
+versions must be distributed under the same license.
+
+This work is based on “2020 Aston Martin DBS GT Zagato | www.vecarz.com” by
+vecarz, licensed under CC BY-NC-SA 4.0. The runtime GLB has been optimized for
+web delivery (geometry quantization, texture resizing/compression, pruning and
+mesh joining) without changing the source license.
