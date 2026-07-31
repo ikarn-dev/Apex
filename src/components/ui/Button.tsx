@@ -8,8 +8,24 @@ type Size = "sm" | "md" | "lg";
 const VARIANTS: Record<Variant, string> = {
   primary:
     "bg-apex text-void hover:bg-apex/85 active:bg-apex/70 border border-apex disabled:bg-apex/30 disabled:border-apex/30",
+  /*
+   * The outlined variant paints its edge as a shape (`notch-edge`) instead of
+   * stroking a `border`. A border would be cut away by `clip-notch` along with the
+   * corner, leaving the two diagonals bare — the edge has to follow the silhouette.
+   *
+   * That means the surface moves from `bg-*` to `--fill`: the fill layer sits above
+   * the element's own background, so a `bg-` class here would be hidden behind it.
+   */
   secondary:
-    "bg-carbon text-chalk border border-steel hover:border-apex/60 hover:text-apex active:bg-steel",
+    "notch-edge text-chalk [--edge:var(--color-steel)] [--fill:var(--color-carbon)] " +
+    "hover:text-apex hover:[--edge:var(--color-apex)] active:[--fill:var(--color-steel)] " +
+    "disabled:[--edge:var(--color-steel)] disabled:[--fill:var(--color-carbon)]",
+  /*
+   * `ghost` and `danger` stay on `border`, and stay imperfect on the diagonals.
+   * Both sit over blurred gameplay in the pause and results overlays and need a
+   * see-through interior, which the two-layer edge cannot give: the layer behind the
+   * fill *is* the edge colour, so anything translucent tints towards it.
+   */
   ghost:
     "bg-transparent text-fog border border-transparent hover:text-chalk hover:border-steel",
   danger:

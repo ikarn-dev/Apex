@@ -5,6 +5,16 @@ import type { LevelId } from "./levels";
 
 export type RankId = "rookie" | "street" | "circuit" | "apex" | "legend";
 
+/**
+ * Note on `unlocks`.
+ *
+ * Rank is standing, not a gate. Both acts and the single car in the roster are
+ * available from zero XP, so this field describes what a rank *means* rather than
+ * what it hands over. It used to promise EVO-37, PHANTOM 765, Acts III to V and a
+ * Ghost Duel — none of which exist — which made the profile screen advertise a game
+ * the player could never reach.
+ */
+
 export interface RankDefinition {
   id: RankId;
   /** u8 stored on the driver profile. */
@@ -24,7 +34,7 @@ export const RANKS: RankDefinition[] = [
     xp: 0,
     accent: 0x6b7885,
     cssAccent: "var(--color-fog)",
-    unlocks: ["EVO-37", "Act I – II"],
+    unlocks: ["APEX GTZ", "Acts I – II"],
   },
   {
     id: "street",
@@ -33,7 +43,7 @@ export const RANKS: RankDefinition[] = [
     xp: 2_500,
     accent: 0x4ade80,
     cssAccent: "var(--color-lime)",
-    unlocks: ["Act III", "Neon liveries"],
+    unlocks: ["Settled a full act"],
   },
   {
     id: "circuit",
@@ -42,7 +52,7 @@ export const RANKS: RankDefinition[] = [
     xp: 10_000,
     accent: 0x00e5ff,
     cssAccent: "var(--color-apex)",
-    unlocks: ["PHANTOM 765", "Act IV"],
+    unlocks: ["Par pace on both acts"],
   },
   {
     id: "apex",
@@ -51,7 +61,7 @@ export const RANKS: RankDefinition[] = [
     xp: 30_000,
     accent: 0xffb300,
     cssAccent: "var(--color-amber)",
-    unlocks: ["ZAGATO GT", "Act V"],
+    unlocks: ["Committed beyond par"],
   },
   {
     id: "legend",
@@ -60,7 +70,7 @@ export const RANKS: RankDefinition[] = [
     xp: 75_000,
     accent: 0xa855f7,
     cssAccent: "var(--color-violet)",
-    unlocks: ["Ghost Duel", "Legend livery"],
+    unlocks: ["Top of the ledger"],
   },
 ];
 

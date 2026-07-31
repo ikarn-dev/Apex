@@ -20,9 +20,10 @@
 
 import { Group, Vector3, type Scene } from "three";
 import { CARS } from "../config/cars";
+import { rivalLivery } from "../config/drivers";
 import { getLevel } from "../config/levels";
 import { QUALITY_PRESETS, demote, type QualityTier } from "../config/quality";
-import { CarView, type CarDetail } from "../entities/CarView";
+import { CarView, carDetailFor, type CarDetail } from "../entities/CarView";
 import { FIXED_STEP, RaceDirector } from "../race/RaceDirector";
 import { CircuitView } from "../track/CircuitView";
 import type {
@@ -38,6 +39,7 @@ import { InputManager } from "./Input";
 import { Renderer } from "./Renderer";
 import { Resources } from "./Resources";
 import { buildWorld } from "./World";
+import { Scenery } from "../world/Scenery";
 import { clamp, lerp } from "@/lib/math";
 
 /** Clamp on catch-up work after a stall, ms. */
@@ -71,6 +73,7 @@ export class Engine implements EngineHandle {
 
   private readonly world: ReturnType<typeof buildWorld>;
   private readonly circuit: CircuitView;
+  private readonly scenery: Scenery;
   private scene: Scene;
   private disposeWorld: () => void;
   private carGroup = new Group();
@@ -118,6 +121,7 @@ export class Engine implements EngineHandle {
     this.director = new RaceDirector({
       level,
       carId: options.config.carId,
+      driverName: options.config.driverName,
       seed: BigInt(options.config.seed),
       maxRivals: quality.maxRivals,
       bridge: options.bridge,
@@ -138,6 +142,17 @@ export class Engine implements EngineHandle {
     this.scene = this.world.scene;
     this.disposeWorld = this.world.dispose;
     this.scene.add(this.circuit.group);
+
+    this.scenery = new Scenery(
+      this.director.track,
+      quality,
+      this.circuit.groundHeight,
+      level.env,
+    );
+    this.scene.add(this.scenery.group);
+    // The camera-facing landscape is a sibling of the world-space tree line;
+    // `render` positions and aims it independently every frame.
+    this.scene.add(this.scenery.backdrop);
 
     this.carGroup.name = "cars";
     this.scene.add(this.carGroup);
@@ -161,20 +176,34 @@ export class Engine implements EngineHandle {
    *
    * The player always gets the rigged variant: it is the car on screen for the
    * whole race, and it is the only one whose wheels and steering are close enough
-   * to read. Rivals get the same model and the same textures with the rig
-   * collapsed, which is where the draw-call saving comes from.
+   * to read.
+   *
+   * Rivals used to always get `zagato-lq.glb`, whose rig is collapsed — 30 flat
+   * meshes with no `WHEEL_**` nodes at all. `CarView.bindRig` then finds nothing
+   * and their wheels are welded to the bodyshell, which is plainly visible: a car
+   * alongside you at 300km/h with stationary tyres. That trade is only worth making
+   * on the lowest tier, where the draw calls actually matter.
+   *
+   * It costs less than it looks like, too. Above `low` the whole field shares one
+   * cached GLB, so the race downloads 3.9MB instead of 5.3MB and holds 21MB of
+   * texture memory instead of 30MB — the saving was never in the bytes, only in the
+   * draw calls.
    */
   private detailFor(isPlayer: boolean): CarDetail {
-    return isPlayer ? "hq" : "lq";
+    return carDetailFor(isPlayer, this.quality);
   }
 
   private buildCarViews(): void {
     const quality = QUALITY_PRESETS[this.quality];
+    let rivalIndex = 0;
     for (const racer of this.director.racers) {
       const view = new CarView(
         CARS[racer.carId],
         quality,
         this.detailFor(racer.isPlayer),
+        // The player keeps the car's factory paint; rivals get team colours so a
+        // one-car roster still fields a grid rather than six identical cars.
+        racer.isPlayer ? null : rivalLivery(rivalIndex++),
       );
       const position = new Vector3(
         racer.sim.state.x,
@@ -202,12 +231,15 @@ export class Engine implements EngineHandle {
     // Only the cars are downloaded. The circuit is generated, so it is complete
     // before the first frame and has nothing to wait for.
     //
-    // `allSettled`, not `all`: one car failing must not leave the rest of the
+    // `allSettled`, not `all`: one asset failing must not leave the rest of the
     // field as placeholders forever, and the race still has to be startable. But
     // the failure is reported rather than swallowed.
-    const results = await Promise.allSettled(
-      this.visuals.map((visual) => visual.view.attachModel(this.resources)),
-    );
+    const results = await Promise.allSettled([
+      ...this.visuals.map((visual) => visual.view.attachModel(this.resources)),
+      // Scenery is cosmetic, so it is loaded alongside rather than gated on: a
+      // missing tree pack costs a bare roadside, not a race.
+      this.scenery.load(this.resources),
+    ]);
     if (this.disposed) return;
 
     const failure = results.find((result) => result.status === "rejected");
@@ -218,7 +250,7 @@ export class Engine implements EngineHandle {
     }
 
     this.modelsReady = true;
-    this.bridge.onTelemetry?.({ ...this.director.telemetry });
+    this.bridge.onTelemetry?.(this.snapshot());
     this.bridge.onEvent({ type: "loaded" });
   }
 
@@ -285,6 +317,7 @@ export class Engine implements EngineHandle {
     this.director = new RaceDirector({
       level,
       carId: this.config.carId,
+      driverName: this.config.driverName,
       seed: BigInt(this.config.seed),
       maxRivals: quality.maxRivals,
       bridge: this.bridge,
@@ -320,6 +353,12 @@ export class Engine implements EngineHandle {
   setVolume(volume: number): void {
     this.config = { ...this.config, masterVolume: volume };
     this.audio.setVolume(volume);
+  }
+
+  /** Rename the player mid-flight. Cosmetic; see `RaceDirector.setDriverName`. */
+  setDriverName(name: string): void {
+    this.config = { ...this.config, driverName: name };
+    this.director.setDriverName(name);
   }
 
   get telemetry(): Readonly<Telemetry> {
@@ -459,6 +498,17 @@ export class Engine implements EngineHandle {
       sun.position.copy(this.sunPosition);
     }
 
+    // Park the sky on the camera. A sky at infinity must not parallax, and keeping
+    // it centred is also what guarantees it stays inside the far plane instead of
+    // being sliced into a visible arc by it.
+    const camera = this.renderer.camera;
+    this.world.sky.position.copy(camera.position);
+
+    // Centre the desert horizon on the camera. It is a full ring standing on the
+    // ground plane, so unlike the authored chunk it replaced there is no heading
+    // to aim it at and no facing to get wrong.
+    this.scenery.syncBackdrop(camera.position);
+
     const state = player.sim.state;
     this.audio.update(
       state.rpm,
@@ -470,13 +520,29 @@ export class Engine implements EngineHandle {
     this.renderer.render(this.scene);
 
     // The HUD is DOM, so it is fed a snapshot on an interval instead of being
-    // drawn in this frame. Ten shallow copies a second is measurably cheaper than
-    // a second GL context, and it keeps React off the render path entirely.
+    // drawn in this frame. Ten copies a second is measurably cheaper than a second
+    // GL context, and it keeps React off the render path entirely.
     this.telemetryAccumulator += dt;
     if (this.telemetryAccumulator >= TELEMETRY_INTERVAL_SECONDS) {
       this.telemetryAccumulator %= TELEMETRY_INTERVAL_SECONDS;
-      this.bridge.onTelemetry?.({ ...this.director.telemetry });
+      this.bridge.onTelemetry?.(this.snapshot());
     }
+  }
+
+  /**
+   * A snapshot React can hold on to.
+   *
+   * Shallow for the scalars, but `standings` has to be copied a level deeper: the
+   * director mutates those rows in place every step to avoid allocating inside the
+   * fixed step, so a shared reference would mean every snapshot React ever received
+   * showed the current order. Six small objects ten times a second.
+   */
+  private snapshot(): Telemetry {
+    const telemetry = this.director.telemetry;
+    return {
+      ...telemetry,
+      standings: telemetry.standings.map((row) => ({ ...row })),
+    };
   }
 
   /** Camera shake and an audible thud on contact. Called by the race shell. */
@@ -503,6 +569,7 @@ export class Engine implements EngineHandle {
     this.visuals = [];
 
     this.circuit.dispose();
+    this.scenery.dispose();
     this.disposeWorld();
     this.resources.dispose();
     this.renderer.dispose();

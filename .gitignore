@@ -9,12 +9,6 @@ out/
 build/
 next-env.d.ts
 
-# production assets are generated from assets/source by `npm run assets:optimize`
-public/models/cars/*.glb
-
-# raw source art (25-37MB each) — keep out of git, distribute out of band
-assets/source/
-
 # env
 .env
 .env.local

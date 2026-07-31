@@ -33,18 +33,24 @@ pub const LEVELS: [LevelParams; 6] = [
     // the real route in the real car, and must be re-run whenever the layout or
     // the car's tuning changes — `floor_ms` is an anti-cheat rejection threshold,
     // so a stale value here rejects legitimate runs.
+    //
+    // Indices 2 to 5 are retired: the client ships Acts I and II only, and
+    // `LevelId` in `game/config/levels.ts` no longer names the rest. Their entries
+    // stay because a `DriverProfile` already on chain records cleared levels by
+    // index, so reusing 2 for a future act would mark it cleared for every existing
+    // player. Append; never reorder, never reuse.
     // 0 — ACT I, Cold Start
-    LevelParams { laps: 1, par_ms: 139000, floor_ms: 86000, base_xp: 400, drift_bps: 400, clean_bonus: 150, drift_target: 0, target_position: 3, unlock_xp: 0 },
+    LevelParams { laps: 1, par_ms: 94000, floor_ms: 58500, base_xp: 400, drift_bps: 400, clean_bonus: 150, drift_target: 0, target_position: 3, unlock_xp: 0 },
     // 1 — ACT II, Delegation
-    LevelParams { laps: 1, par_ms: 139500, floor_ms: 86500, base_xp: 700, drift_bps: 600, clean_bonus: 250, drift_target: 0, target_position: 3, unlock_xp: 0 },
+    LevelParams { laps: 1, par_ms: 94000, floor_ms: 58500, base_xp: 700, drift_bps: 600, clean_bonus: 250, drift_target: 0, target_position: 3, unlock_xp: 0 },
     // 2 — ACT III, Tick Rate
-    LevelParams { laps: 1, par_ms: 145500, floor_ms: 90000, base_xp: 850, drift_bps: 1_400, clean_bonus: 300, drift_target: 50, target_position: 3, unlock_xp: 2_500 },
+    LevelParams { laps: 1, par_ms: 104000, floor_ms: 64500, base_xp: 850, drift_bps: 1_400, clean_bonus: 300, drift_target: 40, target_position: 3, unlock_xp: 2_500 },
     // 3 — ACT IV, The Commit Window
-    LevelParams { laps: 2, par_ms: 275500, floor_ms: 171000, base_xp: 1_100, drift_bps: 900, clean_bonus: 400, drift_target: 0, target_position: 2, unlock_xp: 10_000 },
+    LevelParams { laps: 2, par_ms: 186000, floor_ms: 115500, base_xp: 1_100, drift_bps: 900, clean_bonus: 400, drift_target: 0, target_position: 2, unlock_xp: 10_000 },
     // 4 — ACT V, Undelegate
-    LevelParams { laps: 1, par_ms: 140500, floor_ms: 87000, base_xp: 1_600, drift_bps: 1_000, clean_bonus: 600, drift_target: 0, target_position: 1, unlock_xp: 30_000 },
+    LevelParams { laps: 1, par_ms: 89000, floor_ms: 55000, base_xp: 1_600, drift_bps: 1_000, clean_bonus: 600, drift_target: 0, target_position: 1, unlock_xp: 30_000 },
     // 5 — Endless Time Attack
-    LevelParams { laps: 1, par_ms: 138000, floor_ms: 85500, base_xp: 600, drift_bps: 1_100, clean_bonus: 350, drift_target: 0, target_position: 1, unlock_xp: 0 },
+    LevelParams { laps: 1, par_ms: 108500, floor_ms: 67500, base_xp: 600, drift_bps: 1_100, clean_bonus: 350, drift_target: 0, target_position: 1, unlock_xp: 0 },
 ];
 
 /// XP required to unlock each car index. Mirrors `CARS[*].unlockXp`.
@@ -58,6 +64,15 @@ const PACE_MAX_PCT: u64 = 200;
 const PLACING_BONUS: [u32; 6] = [500, 250, 100, 0, 0, 0];
 const RISK_PER_DEFERRED_LAP: u64 = 25;
 const MAX_RISK_PCT: u64 = 300;
+
+/// XP forfeited per registered contact. Mirrors `XP_PER_CONTACT` in `xp.ts`.
+///
+/// Derived from the collision count and nothing else, on purpose. That count is
+/// already streamed to the rollup by `tick` as `collision_delta` and accumulated on
+/// `RaceSession.collisions`, so this term needs no new instruction argument and no
+/// new account field — the penalty was already on chain, it just was not being
+/// charged for.
+const XP_PER_CONTACT: u64 = 120;
 
 /// Rank thresholds. Mirrors `RANKS` in `src/game/config/progression.ts`.
 pub const RANK_THRESHOLDS: [u64; 5] = [0, 2_500, 10_000, 30_000, 75_000];
@@ -96,6 +111,11 @@ pub fn risk_percent(bank_deferred_laps: u8) -> u64 {
     (100 + RISK_PER_DEFERRED_LAP * bank_deferred_laps as u64).min(MAX_RISK_PCT)
 }
 
+/// Penalty in XP for a number of contacts, before it is capped at the subtotal.
+pub fn penalty_xp(collisions: u16) -> u64 {
+    collisions as u64 * XP_PER_CONTACT
+}
+
 pub struct XpInput {
     pub total_ms: u32,
     pub drift_score: u32,
@@ -111,6 +131,9 @@ pub struct XpBreakdown {
     pub clean: u64,
     pub overtakes: u64,
     pub placing: u64,
+    /// XP forfeited to contact, as a positive number already subtracted from
+    /// `total`. Saturated at the subtotal, because this arithmetic is unsigned.
+    pub penalty: u64,
     pub risk_percent: u64,
     pub total: u64,
 }
@@ -128,8 +151,11 @@ pub fn compute_xp(level: &LevelParams, input: &XpInput) -> XpBreakdown {
     let placing = PLACING_BONUS[placing_index] as u64;
 
     let subtotal = pace + drift + clean + overtakes + placing;
+    // `min` and not a checked subtraction: a run that forfeited more than it earned
+    // scores zero. Subtracting first would wrap, and this is a u64.
+    let penalty = penalty_xp(input.collisions).min(subtotal);
     let risk = risk_percent(input.bank_deferred_laps);
-    let total = (subtotal * risk) / 100;
+    let total = ((subtotal - penalty) * risk) / 100;
 
     XpBreakdown {
         pace,
@@ -137,6 +163,7 @@ pub fn compute_xp(level: &LevelParams, input: &XpInput) -> XpBreakdown {
         clean,
         overtakes,
         placing,
+        penalty,
         risk_percent: risk,
         total,
     }

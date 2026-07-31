@@ -48,8 +48,11 @@ function policy(
   const tz = target.z + target.rz * target.racingLine;
   const error = wrapAngle(Math.atan2(tx - state.x, tz - state.z) - state.yaw);
 
+  // Quadratic in speed, like the braking distance it has to cover. A linear scan
+  // under-looks badly once top speed goes up.
   let worst = 0;
-  for (let d = 6; d < 30 + state.speed * 1.9; d += 6) {
+  const scan = 30 + (state.speed * state.speed) / 26;
+  for (let d = 6; d < scan; d += 6) {
     worst = Math.max(
       worst,
       Math.abs(track.sampleAtDistance(projection.distance + d).curvature),
@@ -60,7 +63,8 @@ function policy(
 
   if (style === "clean") {
     return {
-      steer: clamp(error * 2.0, -1, 1),
+      // Gain raised with the steering model; see `smoke-sim.ts`.
+      steer: clamp(error * 3.4, -1, 1),
       throttle: state.speed < cornerSpeed ? 1 : 0,
       brake: state.speed > cornerSpeed * 1.12 ? 0.7 : 0,
       handbrake: false,
@@ -72,7 +76,7 @@ function policy(
   const entry = cornerSpeed * 1.25;
   const inCorner = worst > 0.008;
   return {
-    steer: clamp(error * 2.2 - state.slipAngle * 0.9, -1, 1),
+    steer: clamp(error * 3.6 - state.slipAngle * 0.9, -1, 1),
     throttle: state.speed < entry ? 1 : 0.55,
     brake: state.speed > entry * 1.3 ? 0.5 : 0,
     handbrake: inCorner && state.speed > 16 && Math.abs(state.slipAngle) < 0.35,
@@ -158,7 +162,7 @@ function measure(levelId: LevelId, style: PolicyStyle = "clean"): Measurement {
   };
 }
 
-const ids: LevelId[] = [...CAMPAIGN_ORDER, "endless-time-attack"];
+const ids: LevelId[] = [...CAMPAIGN_ORDER];
 
 /**
  * A clean race is a little slower than the sum of its best laps — traffic, the

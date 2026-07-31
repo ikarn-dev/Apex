@@ -18,7 +18,27 @@
   --color-lime: #4ade80;
   --color-violet: #a855f7;
 
+  /* -------------------------------------------------------------------------
+     Card palette. Four colours, shared by the campaign grid and the garage.
+
+     Fixed set on purpose: every surface, rule and text tone on those screens is
+     one of these four, or one of them mixed with `--color-void` through the
+     `grid-*` utilities below. No one-off hexes and no invented half-shades — if
+     a new tone is needed it gets a token here first.
+     ------------------------------------------------------------------------- */
+  --color-navy: #132f63;
+  --color-gold: #fabb5a;
+  --color-cream: #f7f1ea;
+  --color-coral: #f6554d;
+
+  /* The page itself: navy taken right down. Not `--color-void`, which is a
+     near-black and made every card look like it was cut out and pasted on. Cards
+     sit two steps above this, so the stack has somewhere to go. */
+  --color-ink: #091426;
+
   --font-display: var(--font-display), "Arial Black", sans-serif;
+  /* Interface chrome: nav, buttons, badges, labels. */
+  --font-ui: var(--font-ui), sans-serif;
   --font-mono: var(--font-mono), ui-monospace, monospace;
 
   --ease-snap: cubic-bezier(0.16, 1, 0.3, 1);
@@ -64,17 +84,37 @@
   -webkit-tap-highlight-color: transparent;
 }
 
+:root {
+  /*
+   * The notched silhouette, shared by `clip-notch` and `notch-edge`.
+   *
+   * Held in a custom property so the element and its two edge layers cannot drift
+   * apart — three copies of the same polygon is three chances to change one of them.
+   * Percentages in `clip-path` resolve against each element's own box, so one
+   * definition fits every size of control.
+   */
+  --notch-path: polygon(
+    0 0,
+    calc(100% - 10px) 0,
+    100% 10px,
+    100% 100%,
+    10px 100%,
+    0 calc(100% - 10px)
+  );
+}
+
 html {
   color-scheme: dark;
-  background-color: var(--color-void);
+  background-color: var(--color-ink);
   /* Avoid iOS text auto-inflation in landscape gameplay. */
   -webkit-text-size-adjust: 100%;
 }
 
 body {
-  background-color: var(--color-void);
-  color: var(--color-chalk);
-  font-family: var(--font-mono);
+  background-color: var(--color-ink);
+  color: var(--color-cream);
+  /* Prose in the display grotesque; chrome opts into `font-ui`, numbers into mono. */
+  font-family: var(--font-display);
   overscroll-behavior: none;
   min-height: 100dvh;
 }
@@ -84,6 +124,23 @@ body[data-race="active"] {
   overflow: hidden;
   touch-action: none;
   user-select: none;
+}
+
+@layer base {
+  /* Tailwind v4's preflight sets `cursor: default` on buttons, where v3 set
+     `pointer`. Every control in here is a button or a link, so put it back once
+     rather than hanging `cursor-pointer` off each one and missing some. */
+  button:not(:disabled),
+  summary,
+  [role="button"]:not([aria-disabled="true"]),
+  label[for] {
+    cursor: pointer;
+  }
+
+  button:disabled,
+  [aria-disabled="true"] {
+    cursor: not-allowed;
+  }
 }
 
 @layer utilities {
@@ -132,8 +189,120 @@ body[data-race="active"] {
     background-size: 48px 48px;
   }
 
+  /* ---------------------------------------------------------------------------
+     Card surfaces, used by the campaign grid and the garage.
+
+     Three depths cut from one token so the cards read as a stack rather than as
+     three unrelated greys. Centralised here rather than as `bg-navy/40` sprinkled
+     across the markup, so the depth ramp can be retuned in one place.
+     --------------------------------------------------------------------------- */
+  .grid-face {
+    background-color: var(--color-navy);
+  }
+  .grid-band {
+    background-color: color-mix(in srgb, var(--color-navy) 46%, var(--color-ink));
+  }
+  .grid-cell {
+    background-color: color-mix(in srgb, var(--color-navy) 26%, var(--color-ink));
+  }
+
+  /* ---------------------------------------------------------------------------
+     Bottom glow.
+
+     A warm bloom rising off the lower edge of a card, so the card reads as lit
+     rather than as a filled rectangle. Painted by a pseudo-element at negative
+     z-index: that puts it above the card's own background and below its content,
+     which is why the parent takes `isolation: isolate` — without it the glow
+     escapes the card and sits behind the page.
+
+     `--glow` is the knob. Default gold; a card can hand it coral for a locked
+     state or cream for something inert.
+     --------------------------------------------------------------------------- */
+  .card-glow {
+    position: relative;
+    isolation: isolate;
+  }
+  .card-glow::after {
+    content: "";
+    position: absolute;
+    inset-inline: 0;
+    bottom: 0;
+    height: 42%;
+    z-index: -1;
+    pointer-events: none;
+    background: radial-gradient(
+      130% 100% at 50% 100%,
+      var(--glow, color-mix(in srgb, var(--color-gold) 30%, transparent)) 0%,
+      transparent 72%
+    );
+  }
+
+  /* The hero's pool of light. One soft wash behind the wordmark, nothing more —
+     two overlapping radials read as a smudge rather than as lighting. */
+  .hero-glow {
+    background: radial-gradient(
+      55% 45% at 50% 38%,
+      color-mix(in srgb, var(--color-gold) 14%, transparent) 0%,
+      transparent 72%
+    );
+  }
+
+
+  /* Hairline in the palette's own blue, not a neutral: a grey rule against navy
+     reads as dirt. */
+  .grid-rule {
+    border-color: color-mix(in srgb, var(--color-cream) 16%, transparent);
+  }
+
   .clip-notch {
-    clip-path: polygon(0 0, calc(100% - 10px) 0, 100% 10px, 100% 100%, 10px 100%, 0 calc(100% - 10px));
+    clip-path: var(--notch-path);
+  }
+
+  /**
+   * Notched frame with a visible edge on all six sides.
+   *
+   * `border` plus `clip-path` does not work, and the failure is subtle enough to
+   * ship: the clip cuts the border away along with the corner, so the edge survives
+   * on the four straight runs and both diagonals come out bare. That is what the
+   * connect button looked like — verticals outlined, cut corners open.
+   *
+   * So the edge is *painted as a shape* rather than stroked. `::before` fills the
+   * notch in the edge colour; `::after` fills it again in the surface colour, inset
+   * by the edge width. What is left showing between the two is a border that follows
+   * every side, diagonals included.
+   *
+   * Knobs: `--edge` for the line, `--fill` for the interior, `--edge-width` for the
+   * weight. `--fill` has to be opaque — the layer underneath it is the edge colour,
+   * so a transparent interior shows the edge through the whole control.
+   */
+  .notch-edge {
+    position: relative;
+    isolation: isolate;
+    /* Both would be clipped; the pseudo-elements carry them instead. */
+    border: 0;
+    background-color: transparent;
+  }
+
+  .notch-edge::before,
+  .notch-edge::after {
+    content: "";
+    position: absolute;
+    clip-path: var(--notch-path);
+    pointer-events: none;
+  }
+
+  .notch-edge::before {
+    inset: 0;
+    z-index: -2;
+    background-color: var(--edge, currentColor);
+    transition: background-color 150ms;
+  }
+
+  .notch-edge::after {
+    inset: var(--edge-width, 1px);
+    z-index: -1;
+    background-color: var(--fill, var(--color-ink));
+    transition: background-color 150ms;
   }
 }
 

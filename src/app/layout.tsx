@@ -1,12 +1,34 @@
 import type { Metadata, Viewport } from "next";
-import { Chakra_Petch, JetBrains_Mono } from "next/font/google";
+import { Archivo, JetBrains_Mono, Rajdhani } from "next/font/google";
 import { AppProviders } from "@/components/providers/AppProviders";
 import "./globals.css";
 
-const display = Chakra_Petch({
-  weight: ["500", "600", "700"],
+/**
+ * Three faces, each with one job.
+ *
+ * `Archivo` carries display type and prose. It is a wide grotesque with a real 900,
+ * which is what an oversized wordmark needs, and it still sets a readable paragraph —
+ * so it replaces Manrope rather than sitting alongside it. One fewer download.
+ *
+ * `Rajdhani` is the interface face: navigation, buttons, badges, labels. It was drawn
+ * for screen UI, is squarish and technical without tipping into sci-fi pastiche, and
+ * holds up at the small uppercase sizes this chrome is set in — which is exactly
+ * where a grotesque goes muddy.
+ *
+ * `JetBrains Mono` is for numbers only. Lap times, XP and telemetry have to line up
+ * in columns; nothing else needs a monospace.
+ */
+const display = Archivo({
+  weight: ["500", "600", "700", "800", "900"],
   subsets: ["latin"],
   variable: "--font-display",
+  display: "swap",
+});
+
+const ui = Rajdhani({
+  weight: ["500", "600", "700"],
+  subsets: ["latin"],
+  variable: "--font-ui",
   display: "swap",
 });
 
@@ -47,12 +69,15 @@ export const viewport: Viewport = {
   maximumScale: 1,
   userScalable: false,
   viewportFit: "cover",
-  themeColor: "#05070a",
+  themeColor: "#091426",
 };
 
 export default function RootLayout({ children }: { children: React.ReactNode }) {
   return (
-    <html lang="en" className={`${display.variable} ${mono.variable}`}>
+    <html
+      lang="en"
+      className={`${display.variable} ${ui.variable} ${mono.variable}`}
+    >
       {/*
         `suppressHydrationWarning` covers exactly one real case: browser extensions
         stamp attributes onto <body> before React hydrates — `bis_register` and

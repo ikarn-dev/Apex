@@ -21,12 +21,17 @@
  */
 
 import { CARS, DEFAULT_CAR, type CarId, type CarTuning } from "../config/cars";
+import {
+  DEFAULT_DRIVER_NAME,
+  rivalNames,
+  sanitiseDriverName,
+} from "../config/drivers";
 import type { LevelDefinition } from "../config/levels";
 import { CHECKPOINTS_PER_LAP, Track } from "../track/Track";
 import { VehicleSim, type VehicleInput } from "../physics/VehicleSim";
 import { AiDriver, SKILL_TIERS, type DriverSkill } from "../ai/Driver";
 import { DriftScorer } from "../scoring/drift";
-import { computeXp, projectXp } from "../scoring/xp";
+import { computeXp, penaltyXp, projectXp } from "../scoring/xp";
 import type {
   GameBridge,
   RaceResult,
@@ -43,7 +48,18 @@ export const FIXED_STEP = 1 / 60;
 const COUNTDOWN_SECONDS = 3.2;
 
 /** Restitution when hitting the road edge. */
-const WALL_RESTITUTION = 0.28;
+const WALL_RESTITUTION = 0.42;
+
+/**
+ * Gap left between the car's flank and the barrier face after contact, metres.
+ *
+ * The solver used to clamp the car to *exactly* the limit, so its bodywork ended up
+ * flush with the concrete — and because the collision half-width matches the drawn
+ * body to within 8mm, flush looks like sunk in. Leaving a few centimetres means
+ * contact separates the car from the wall instead of parking it against it, and the
+ * bounce has somewhere to start from.
+ */
+const WALL_SEPARATION = 0.05;
 
 /**
  * How far past the road edge a car must be before the edge solver stops trusting
@@ -83,6 +99,8 @@ const IDLE_TICK_INTERVAL = 10;
 export interface Racer {
   id: number;
   isPlayer: boolean;
+  /** Display name. Cosmetic and local; never leaves the client. */
+  name: string;
   carId: CarId;
   sim: VehicleSim;
   ai: AiDriver | null;
@@ -110,6 +128,8 @@ export interface Racer {
 export interface RaceDirectorOptions {
   level: LevelDefinition;
   carId: CarId;
+  /** The player's display name. Defaulted rather than required. */
+  driverName?: string;
   seed: bigint;
   maxRivals: number;
   bridge: GameBridge;
@@ -176,8 +196,27 @@ export class RaceDirector {
     this.track = new Track();
 
     this.telemetry = createTelemetry(options.level.laps, CHECKPOINTS_PER_LAP);
-    this.spawnField(options.carId, Math.min(options.maxRivals, options.level.rivals));
+    this.spawnField(
+      options.carId,
+      Math.min(options.maxRivals, options.level.rivals),
+      sanitiseDriverName(options.driverName ?? DEFAULT_DRIVER_NAME),
+    );
     this.telemetry.totalRacers = this.racers.length;
+    // One row per racer, allocated once and mutated in place for the rest of the
+    // race. `updatePositions` runs inside the fixed step, which is not allowed to
+    // allocate; `Engine` copies these rows when it publishes to React.
+    this.telemetry.standings = this.racers.map((racer) => ({
+      id: racer.id,
+      name: racer.name,
+      isPlayer: racer.isPlayer,
+      position: racer.position,
+      lapsCompleted: 0,
+      bestLapMs: 0,
+      finished: false,
+      gapM: 0,
+      contacts: 0,
+      penaltyPoints: 0,
+    }));
 
     // Bind the replay digest to the run's identity so a hash cannot be lifted
     // from one run onto another.
@@ -188,12 +227,17 @@ export class RaceDirector {
 
   // ------------------------------------------------------------------- setup
 
-  private spawnField(playerCar: CarId, rivals: number): void {
+  private spawnField(playerCar: CarId, rivals: number, playerName: string): void {
     const total = rivals + 1;
 
     // The player starts at the back — a field to overtake is more interesting
     // than a field to defend against, and it makes the overtake bonus reachable.
     const playerSlot = total - 1;
+
+    // Drawn from the seeded stream before anything else, so the same seed fields
+    // the same grid: who was P3 is part of what a replay has to reproduce.
+    const names = rivalNames(this.rng, rivals);
+    let nextRival = 0;
 
     for (let i = 0; i < total; i += 1) {
       const isPlayer = i === playerSlot;
@@ -218,6 +262,7 @@ export class RaceDirector {
       this.racers.push({
         id: i,
         isPlayer,
+        name: isPlayer ? playerName : (names[nextRival++] ?? DEFAULT_DRIVER_NAME),
         carId,
         sim,
         ai: isPlayer
@@ -296,6 +341,21 @@ export class RaceDirector {
 
   setPlayerInput(input: VehicleInput): void {
     this.playerInput = input;
+  }
+
+  /**
+   * Rename the player.
+   *
+   * The engine is built before the briefing is dismissed, so the name it was given
+   * at construction is whatever was stored from last time. This is how an edit on
+   * the briefing reaches the grid without tearing down a WebGL context. Purely a
+   * label: it touches no simulation state and so cannot affect the replay hash.
+   */
+  setDriverName(name: string): void {
+    const player = this.player;
+    player.name = sanitiseDriverName(name);
+    const row = this.telemetry.standings.find((entry) => entry.id === player.id);
+    if (row) row.name = player.name;
   }
 
   /** Act IV: the player banked; the risk multiplier resets. */
@@ -391,8 +451,15 @@ export class RaceDirector {
       const sample = this.track.sampleAt(racer.trackIndex);
       // `projection.height` is refined along the tangent, so the surface under
       // the car is continuous between samples rather than stepping every 2.5m.
-      racer.sim.step(input, dt, projection.height, sample.slope, sample.banking);
-      this.resolveTrackEdge(racer);
+      // It is the height of the *centreline*, though, and this layout banks up to
+      // 4.87° across a road up to 15.2m wide — so the drawn surface at the road
+      // edge is up to 0.65m away from it. Feeding the centreline height straight
+      // in put the car that far above the tarmac on the low side of every banked
+      // corner, which is exactly the hovering the chase camera was showing.
+      const surfaceY =
+        projection.height + projection.lateral * Math.tan(sample.banking);
+      racer.sim.step(input, dt, surfaceY, sample.slope, sample.banking);
+      this.resolveTrackEdge(racer, dt);
       if (!held) this.resolveStuck(racer, dt);
     }
   }
@@ -471,7 +538,7 @@ export class RaceDirector {
    *    the clamp starts measuring against the wrong part of the circuit and the
    *    car free-roams. A far-outside car now gets a full search before clamping.
    */
-  private resolveTrackEdge(racer: Racer): void {
+  private resolveTrackEdge(racer: Racer, dt: number): void {
     const state = racer.sim.state;
     const car = CARS[racer.carId];
 
@@ -501,8 +568,9 @@ export class RaceDirector {
 
     const side = Math.sign(projection.lateral) || 1;
 
-    // Push back to the edge and reflect off the inward normal.
-    const overshoot = Math.abs(projection.lateral) - limit;
+    // Push back inside the edge — with a small gap, not flush against it — and
+    // reflect off the inward normal.
+    const overshoot = Math.abs(projection.lateral) - limit + WALL_SEPARATION;
     state.x -= sample.rx * side * overshoot;
     state.z -= sample.rz * side * overshoot;
 
@@ -519,7 +587,14 @@ export class RaceDirector {
       -sample.rx * side,
       -sample.rz * side,
       WALL_RESTITUTION,
+      dt,
     );
+
+    // Counted for every car, not only the player: the leaderboard shows each
+    // driver's penalty points, and a rival who spent the race in the barriers
+    // should show for it. Only the player's count is reported to the rollup.
+    const counted = impact > COLLISION_THRESHOLD;
+    if (counted) racer.collisions += 1;
 
     if (racer.isPlayer) {
       this.telemetry.lateralOffset = side * limit;
@@ -527,9 +602,7 @@ export class RaceDirector {
         this.telemetry.offTrack = true;
         this.bridge.onEvent({ type: "off-track", offTrack: true });
       }
-      if (impact > COLLISION_THRESHOLD) {
-        this.registerPlayerCollision(impact);
-      }
+      if (counted) this.reportPlayerCollision(impact);
     }
   }
 
@@ -568,19 +641,30 @@ export class RaceDirector {
           a.sim.applyCarImpact(-nx, -nz, impulse);
           b.sim.applyCarImpact(nx, nz, impulse);
 
-          const player = a.isPlayer ? a : b.isPlayer ? b : null;
-          if (player && -closing > COLLISION_THRESHOLD) {
-            this.registerPlayerCollision(-closing);
+          if (-closing > COLLISION_THRESHOLD) {
+            // Both drivers wear it. Racing incidents are not adjudicated here.
+            a.collisions += 1;
+            b.collisions += 1;
+            if (a.isPlayer || b.isPlayer) this.reportPlayerCollision(-closing);
           }
         }
       }
     }
   }
 
-  private registerPlayerCollision(severity: number): void {
+  /**
+   * Publish a contact the player was involved in.
+   *
+   * The count itself is incremented at the contact site, for whichever cars were
+   * involved — this is only the reporting half: telemetry, the rollup accumulator,
+   * the drift chain, and the event React reacts to. Splitting them is what lets
+   * rivals accrue penalty points without their contacts leaking into the player's
+   * on-chain `collision_delta`.
+   */
+  private reportPlayerCollision(severity: number): void {
     const player = this.player;
-    player.collisions += 1;
     this.telemetry.collisions = player.collisions;
+    this.telemetry.penaltyPoints = penaltyXp(player.collisions);
     this.pendingCollisions += 1;
 
     // Contact ends a drift chain: no credit for bouncing off scenery.
@@ -695,6 +779,26 @@ export class RaceDirector {
     ordered.forEach((racer, index) => {
       racer.position = index + 1;
     });
+
+    // Refresh the leaderboard rows in finishing order. Written in place into the
+    // array allocated at construction: this runs inside the fixed step, which is
+    // not allowed to allocate.
+    const leader = ordered[0]!;
+    const rows = this.telemetry.standings;
+    for (let i = 0; i < rows.length && i < ordered.length; i += 1) {
+      const racer = ordered[i]!;
+      const row = rows[i]!;
+      row.id = racer.id;
+      row.name = racer.name;
+      row.isPlayer = racer.isPlayer;
+      row.position = racer.position;
+      row.lapsCompleted = racer.lapsCompleted;
+      row.bestLapMs = racer.bestLapMs;
+      row.finished = racer.finished;
+      row.gapM = Math.max(0, leader.travelled - racer.travelled);
+      row.contacts = racer.collisions;
+      row.penaltyPoints = penaltyXp(racer.collisions);
+    }
 
     if (player.position !== previous) {
       if (player.position < previous) this.overtakes += previous - player.position;

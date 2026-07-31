@@ -24,10 +24,37 @@ export type RacePhase =
 export type ControlScheme = "keyboard" | "gamepad";
 
 /**
+ * One row of the live order, for the leaderboard.
+ *
+ * The engine keeps one of these per racer for the whole race and mutates them in
+ * place — see `Telemetry`'s note on allocation — so a consumer that wants to hold
+ * on to a row has to copy it.
+ */
+export interface StandingEntry {
+  /** Stable racer id, so React can key rows across reorders. */
+  id: number;
+  name: string;
+  isPlayer: boolean;
+  /** 1-based, and the array is sorted by it. */
+  position: number;
+  lapsCompleted: number;
+  bestLapMs: number;
+  finished: boolean;
+  /** Distance behind the leader, metres. 0 for the leader. */
+  gapM: number;
+  /** Contacts this driver has had. */
+  contacts: number;
+  /** XP this driver has forfeited to contact. */
+  penaltyPoints: number;
+}
+
+/**
  * Per-frame mutable telemetry.
  *
- * A single long-lived object: Pixi reads it directly every frame, React never
- * sees it. Nothing in the render loop is allowed to allocate a new one.
+ * A single long-lived object: the HUD reads a throttled snapshot of it, React never
+ * sees the live object. Nothing in the render loop is allowed to allocate a new one,
+ * which is why `standings` is a fixed array of mutable rows rather than rebuilt each
+ * step — and why `Engine` deep-copies it when it publishes.
  */
 export interface Telemetry {
   speedMs: number;
@@ -59,6 +86,8 @@ export interface Telemetry {
 
   position: number;
   totalRacers: number;
+  /** The whole field, sorted by position. */
+  standings: StandingEntry[];
 
   raceTimeMs: number;
   currentLapMs: number;
@@ -68,6 +97,8 @@ export interface Telemetry {
   deltaMs: number;
 
   collisions: number;
+  /** XP forfeited to contact so far. */
+  penaltyPoints: number;
   offTrack: boolean;
   /** Distance from the racing line, metres. Feeds the off-track warning. */
   lateralOffset: number;
@@ -105,12 +136,14 @@ export function createTelemetry(totalLaps: number, totalCheckpoints: number): Te
     lapProgress: 0,
     position: 1,
     totalRacers: 1,
+    standings: [],
     raceTimeMs: 0,
     currentLapMs: 0,
     lastLapMs: 0,
     bestLapMs: 0,
     deltaMs: 0,
     collisions: 0,
+    penaltyPoints: 0,
     offTrack: false,
     lateralOffset: 0,
     projectedXp: 0,
@@ -182,6 +215,14 @@ export interface XpBreakdown {
   clean: number;
   overtakes: number;
   placing: number;
+  /**
+   * XP forfeited to contact, as a positive number to subtract.
+   *
+   * Saturated at the subtotal on both sides of the wire, because the program's
+   * arithmetic is unsigned: a driver who spends the whole race in the barriers
+   * scores zero, never a negative that would wrap.
+   */
+  penalty: number;
   /** Percent, 100 = x1.00. */
   riskPercent: number;
   total: number;
@@ -221,6 +262,10 @@ export interface TickPayload {
 export interface RaceConfig {
   levelId: LevelId;
   carId: CarId;
+  /**
+   * The player's display name. Local and cosmetic; never sent to the chain.
+   */
+  driverName: string;
   /** Decimal string so a u64 survives the trip through JSON. */
   seed: string;
   quality: QualityTier;
@@ -245,6 +290,7 @@ export interface EngineHandle {
   markBanked(): void;
   setControls(scheme: ControlScheme): void;
   setVolume(volume: number): void;
+  setDriverName(name: string): void;
   readonly telemetry: Readonly<Telemetry>;
   dispose(): void;
 }

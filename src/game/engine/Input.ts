@@ -32,14 +32,23 @@ import { clamp, moveTowards } from "@/lib/math";
  * - **It gets heavier and stronger with speed.** At 200km/h the wheel resists
  *   being turned and snaps back hard; at walking pace it does neither.
  */
-const STEER_ATTACK = 2.4;
+const STEER_ATTACK = 3.6;
 const STEER_RETURN = 5.5;
 /** Extra self-centring at speed, added on top of `STEER_RETURN`. */
 const STEER_RETURN_SPEED_GAIN = 5;
-/** How much slower the wheel is to wind on at speed, 0-1. */
-const STEER_ATTACK_SPEED_TAPER = 0.45;
+/**
+ * How much slower the wheel is to wind on at speed, 0-1.
+ *
+ * A heavier wheel at speed is right; a wheel that cannot be turned is not. At
+ * 0.45 with a 2.4 attack rate the wheel wound on at 1.32/s flat out — 0.76s to
+ * reach full lock, during which the car covered 70m — while self-centring ran at
+ * 10.5/s. Holding a key barely built any lock and releasing it threw the lock
+ * away instantly, which is what made the left and right controls feel dead at
+ * speed. Full lock now takes ~0.35s at 300km/h and centring is still quicker.
+ */
+const STEER_ATTACK_SPEED_TAPER = 0.22;
 /** Speed at which the speed-dependent terms saturate, m/s. */
-const STEER_REFERENCE_SPEED = 55;
+const STEER_REFERENCE_SPEED = 62;
 
 /** Analog stick noise floor. */
 const STICK_DEADZONE = 0.14;

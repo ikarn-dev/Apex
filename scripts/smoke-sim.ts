@@ -14,6 +14,7 @@
  *   4. XP is computed and matches a fresh evaluation of the same formula.
  *   5. The simulation is deterministic — same seed and inputs, same replay hash.
  *   6. The rollup tick stream is produced at a sane rate.
+ *   7. The leaderboard feed is ordered, named, and charges for contact.
  *
  * Run: npm run test:sim
  */
@@ -22,9 +23,19 @@ import { RaceDirector, FIXED_STEP } from "../src/game/race/RaceDirector";
 import { CHECKPOINTS_PER_LAP, Track } from "../src/game/track/Track";
 import { LEVELS, CAMPAIGN_ORDER, type LevelId } from "../src/game/config/levels";
 import { CARS } from "../src/game/config/cars";
-import { computeXp } from "../src/game/scoring/xp";
-import type { GameBridge, GameEvent, RaceResult, TickPayload } from "../src/game/types";
+import { RIVAL_NAMES } from "../src/game/config/drivers";
+import { XP_PER_CONTACT, computeXp } from "../src/game/scoring/xp";
+import type {
+  GameBridge,
+  GameEvent,
+  RaceResult,
+  StandingEntry,
+  TickPayload,
+} from "../src/game/types";
 import { clamp, wrapAngle } from "../src/lib/math";
+
+/** Deliberately padded and lower-case, so name sanitisation is exercised too. */
+const PLAYER_NAME = "  test pilot  ";
 
 let failures = 0;
 let checks = 0;
@@ -68,15 +79,23 @@ function drivePolicy(
   // Slow for curvature ahead, otherwise keep it pinned. Corner speed has to
   // account for surface grip, or the policy carries dry-asphalt speed onto a
   // slick track and spends the race in the barriers.
+  //
+  // The scan has to cover the braking distance, which is quadratic in speed. A
+  // linear scan was adequate at the old 82m/s top speed and is not at 94m/s: the
+  // policy arrived at corners it had not yet looked at and picked up eight
+  // contacts a lap doing it.
   let worst = 0;
-  for (let d = 6; d < 30 + state.speed * 1.8; d += 6) {
+  const scan = 30 + (state.speed * state.speed) / 26;
+  for (let d = 6; d < scan; d += 6) {
     const s = track.sampleAtDistance(projection.distance + d);
     worst = Math.max(worst, Math.abs(s.curvature));
   }
   const cornerSpeed = worst > 1e-5 ? Math.sqrt((11 * gripScale) / worst) : 80;
 
   return {
-    steer: clamp(error * 2.0, -1, 1),
+    // Gain raised with the steering model: full stick used to command 1.6x the
+    // trackable yaw rate, so a small request produced a large response.
+    steer: clamp(error * 3.4, -1, 1),
     throttle: state.speed < cornerSpeed ? 1 : 0,
     brake: state.speed > cornerSpeed * 1.12 ? 0.7 : 0,
     handbrake: false,
@@ -93,6 +112,8 @@ interface RunOutcome {
   leaderProgress: number;
   /** Fraction of racing steps the player spent under 5km/h. */
   crawlFraction: number;
+  /** Final leaderboard rows, copied out of the engine's mutable telemetry. */
+  standings: StandingEntry[];
 }
 
 /**
@@ -121,6 +142,7 @@ function runRace(levelId: LevelId, seed: bigint): RunOutcome {
   const director = new RaceDirector({
     level,
     carId: level.recommendedCar,
+    driverName: PLAYER_NAME,
     seed,
     maxRivals: level.rivals,
     bridge,
@@ -166,6 +188,8 @@ function runRace(levelId: LevelId, seed: bigint): RunOutcome {
     checkpointSequence,
     leaderProgress: raceDistance > 0 ? leaderDistance / raceDistance : 0,
     crawlFraction: racingSteps > 0 ? crawlSteps / racingSteps : 0,
+    // Copied, not referenced: the director mutates these rows in place.
+    standings: director.telemetry.standings.map((row) => ({ ...row })),
   };
 }
 
@@ -173,7 +197,7 @@ function runRace(levelId: LevelId, seed: bigint): RunOutcome {
 
 section("Supplied circuit route");
 
-for (const levelId of [...CAMPAIGN_ORDER, "endless-time-attack" as LevelId]) {
+for (const levelId of CAMPAIGN_ORDER) {
   const level = LEVELS[levelId];
   const track = new Track();
 
@@ -335,6 +359,72 @@ if (run.result) {
   check(finishEvents.length === 1, "exactly one finish event");
 }
 
+// ------------------------------------------------------------- leaderboard feed
+
+section("Leaderboard feed");
+
+{
+  const rows = run.standings;
+  const player = rows.find((row) => row.isPlayer);
+  const rivals = rows.filter((row) => !row.isPlayer);
+
+  check(
+    rows.length === run.result?.totalRacers,
+    "one leaderboard row per racer",
+    `${rows.length} rows`,
+  );
+  check(
+    rows.every((row, i) => row.position === i + 1),
+    "rows are sorted by position",
+  );
+  check(
+    new Set(rows.map((row) => row.id)).size === rows.length,
+    "row ids are unique, so React can key on them",
+  );
+
+  // Sanitisation: padded, lower-case input has to come back as a clean label.
+  check(player?.name === "TEST PILOT", "player row carries the sanitised name", player?.name);
+  check(
+    rivals.every((row) => (RIVAL_NAMES as readonly string[]).includes(row.name)),
+    "every rival is named after a real driver",
+    rivals.map((row) => row.name).join(", "),
+  );
+  check(
+    new Set(rivals.map((row) => row.name)).size === rivals.length,
+    "no two rivals share a name",
+  );
+
+  // The leader defines the gap, so exactly one row is at zero and none is negative.
+  check(rows[0]!.gapM === 0, "the leader's gap is zero");
+  check(
+    rows.every((row) => row.gapM >= 0),
+    "no gap is negative",
+  );
+
+  // Penalty points are the collision count times the published rate, on every row.
+  check(
+    rows.every((row) => row.penaltyPoints === row.contacts * XP_PER_CONTACT),
+    "penalty points are contacts x the published rate",
+  );
+  // Rivals must accrue their own contacts rather than inheriting the player's.
+  check(
+    rivals.some((row) => row.contacts !== player?.contacts) || rivals.length === 0,
+    "rivals count their own contacts",
+    `player ${player?.contacts}, rivals ${rivals.map((r) => r.contacts).join("/")}`,
+  );
+
+  // And the penalty has to actually reach the XP the player is paid.
+  const r = run.result!;
+  check(
+    r.xp.penalty === Math.min(
+      r.xp.pace + r.xp.drift + r.xp.clean + r.xp.overtakes + r.xp.placing,
+      r.collisions * XP_PER_CONTACT,
+    ),
+    "the XP penalty is charged and saturates at the subtotal",
+    `${r.collisions} hits, −${r.xp.penalty} XP`,
+  );
+}
+
 // ----------------------------------------------------------------- determinism
 
 section("Determinism");
@@ -366,7 +456,7 @@ check(
 
 section("All levels are completable");
 
-for (const levelId of [...CAMPAIGN_ORDER, "endless-time-attack" as LevelId]) {
+for (const levelId of CAMPAIGN_ORDER) {
   const level = LEVELS[levelId];
   const outcome = runRace(levelId, 0x1111n + BigInt(level.act));
   check(
@@ -414,7 +504,7 @@ for (const levelId of CAMPAIGN_ORDER) {
 
 section("Par times are achievable");
 
-for (const levelId of [...CAMPAIGN_ORDER, "endless-time-attack" as LevelId]) {
+for (const levelId of CAMPAIGN_ORDER) {
   const level = LEVELS[levelId];
   // The pace term clamps at 25%-200%. If par is so far off that a competent run
   // pins the clamp, the XP economy stops responding to skill at all.
@@ -432,4 +522,7 @@ for (const levelId of [...CAMPAIGN_ORDER, "endless-time-attack" as LevelId]) {
 console.log(
   `\n${failures === 0 ? "PASS" : "FAIL"} — ${checks - failures}/${checks} checks passed\n`,
 );
-process.exit(failures === 0 ? 0 : 1);
+// `process.exitCode`, not `process.exit`: the latter tears the process down before
+// Node has flushed a piped stdout, so `npm run test:sim | tail` printed nothing at
+// all about half the time. Every other script in here already does it this way.
+process.exitCode = failures === 0 ? 0 : 1;

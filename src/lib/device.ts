@@ -75,29 +75,30 @@ export function getDeviceProfile(): DeviceProfile {
 }
 
 const WEAK_GPU = /(intel.*(hd|uhd) graphics (5|6)|intel.*gma|microsoft basic render|llvmpipe|swiftshader)/i;
-const STRONG_GPU = /(rtx|radeon rx|arc a[0-9]|apple m[1-9]|geforce gtx 1[0-9]{3})/i;
 
-/** Initial tier guess before any frames have been measured. */
+/**
+ * Initial tier. High unless the device gives a concrete reason to think otherwise.
+ *
+ * This used to score upward from zero and needed +2 to reach `high`, which in
+ * practice meant a *recognised* strong GPU string. Browsers mask
+ * `WEBGL_debug_renderer_info` by default and `deviceMemory` is Chromium-only, so on
+ * Safari and Firefox the GPU came back `null`, the memory came back `null`, and
+ * every machine — including an M-series Mac that runs this at 120fps — landed on
+ * `medium`. Defaulting to the tier almost every desktop can actually hold, and
+ * demoting only on evidence, is the right way round.
+ *
+ * The evidence has to be specific: no WebGL2 at all, a GPU string that names a
+ * known-weak part or a software rasteriser, 2GB of RAM, or two cores.
+ */
 export function detectQualityTier(profile = getDeviceProfile()): QualityTier {
   if (!profile.hasWebGL2) return "low";
+  if (profile.gpu && WEAK_GPU.test(profile.gpu)) return "low";
+  if (profile.memoryGb !== null && profile.memoryGb <= 2) return "low";
+  if (profile.cores <= 2) return "low";
 
-  let score = 0;
+  // Borderline: enough to run, not enough to assume the top tier.
+  if (profile.memoryGb !== null && profile.memoryGb <= 4) return "medium";
+  if (profile.cores <= 4) return "medium";
 
-  if (profile.gpu) {
-    if (WEAK_GPU.test(profile.gpu)) score -= 3;
-    else if (STRONG_GPU.test(profile.gpu)) score += 2;
-  }
-
-  if (profile.memoryGb !== null) {
-    if (profile.memoryGb <= 2) score -= 3;
-    else if (profile.memoryGb <= 4) score -= 1;
-    else if (profile.memoryGb >= 8) score += 1;
-  }
-
-  if (profile.cores <= 2) score -= 2;
-  else if (profile.cores >= 8) score += 1;
-
-  if (score >= 2) return "high";
-  if (score >= -1) return "medium";
-  return "low";
+  return "high";
 }

@@ -1,130 +1,307 @@
 "use client";
 
-import Link from "next/link";
 import { useRouter } from "next/navigation";
-import { Badge, Meter, Panel } from "@/components/ui/Panel";
-import { Button, ButtonLink } from "@/components/ui/Button";
 import { ChainStatus } from "@/components/wallet/ChainStatus";
-import { CAMPAIGN_ORDER, LEVELS, type LevelDefinition } from "@/game/config/levels";
-import { CARS } from "@/game/config/cars";
+import { ConnectButton } from "@/components/wallet/ConnectButton";
+import {
+  CAMPAIGN_ORDER,
+  COMING_SOON_ACT,
+  LEVELS,
+  type ComingSoonAct,
+  type LevelDefinition,
+} from "@/game/config/levels";
+import { OUTLINE_VIEWBOX } from "@/game/track/outline";
 import { isLevelUnlocked } from "@/game/config/progression";
 import { useProfile } from "@/stores/profile";
 import { useRace } from "@/stores/race";
-import { formatLapTime, formatNumber } from "@/lib/format";
+import { formatLapTime } from "@/lib/format";
 import { cn } from "@/lib/cn";
 
-function LevelCard({
+/** Every act runs the one circuit, so the card names it rather than implying a pick. */
+const CIRCUIT_NAME = "APEX International";
+
+type CardStatus = "open" | "cleared" | "locked" | "soon";
+
+/**
+ * Overrides for the card's bottom glow.
+ *
+ * `--glow` is read by the `.card-glow` utility. Declared here as typed constants
+ * because React's `CSSProperties` has no slot for custom properties, and the cast
+ * belongs in one named place rather than inline at every call site.
+ */
+const GLOW_LOCKED = {
+  "--glow": "color-mix(in srgb, var(--color-coral) 24%, transparent)",
+} as React.CSSProperties;
+
+const GLOW_INERT = {
+  "--glow": "color-mix(in srgb, var(--color-cream) 10%, transparent)",
+} as React.CSSProperties;
+
+const STATUS_LABEL: Record<CardStatus, string> = {
+  open: "Entry open",
+  cleared: "Cleared",
+  locked: "Locked",
+  soon: "In development",
+};
+
+/**
+ * Status dot and label.
+ *
+ * One indicator per card, top left. It replaces the three stacked badges the old
+ * card could show at once — cleared, XP requirement, boss — which competed with the
+ * act title for the eye and repeated what the disabled buttons already said.
+ */
+function StatusPill({ status }: { status: CardStatus }) {
+  const dot: Record<CardStatus, string> = {
+    open: "bg-gold",
+    cleared: "bg-cream",
+    locked: "bg-coral",
+    soon: "bg-cream/40",
+  };
+
+  return (
+    <span className="inline-flex items-center gap-2 bg-void/55 px-2.5 py-1.5 font-mono text-[10px] uppercase leading-none tracking-[0.16em] text-cream backdrop-blur-sm">
+      <span className={cn("size-1.5 rounded-full", dot[status])} aria-hidden="true" />
+      {STATUS_LABEL[status]}
+    </span>
+  );
+}
+
+/** The circuit's plan view, laid into the card face. */
+function TrackOutline({ path, muted }: { path: string; muted?: boolean }) {
+  return (
+    <svg
+      viewBox={`0 0 ${OUTLINE_VIEWBOX} ${OUTLINE_VIEWBOX}`}
+      className="absolute inset-0 size-full"
+      aria-hidden="true"
+    >
+      <path
+        d={path}
+        fill="none"
+        stroke="currentColor"
+        strokeWidth={2.4}
+        strokeLinejoin="round"
+        className={muted ? "text-cream/20" : "text-cream/70"}
+      />
+    </svg>
+  );
+}
+
+/**
+ * A card action.
+ *
+ * Local rather than the shared `Button`, on purpose. `Button`'s variants each set a
+ * background and a notched `clip-path` from the neon-industrial palette, so using
+ * one here meant overriding `bg-apex` with `bg-gold` and `clip-path` with `none` —
+ * two utilities setting the same property in the same cascade layer, where the
+ * winner is decided by Tailwind's output order rather than by the class list. That
+ * works until it silently does not. These cards are square-edged and use the grid
+ * palette, so they get their own control.
+ */
+function CardAction({
+  tone,
+  disabled,
+  onClick,
+  children,
+}: {
+  tone: "solid" | "quiet";
+  disabled?: boolean;
+  onClick: () => void;
+  children: React.ReactNode;
+}) {
+  return (
+    <button
+      type="button"
+      disabled={disabled}
+      onClick={onClick}
+      className={cn(
+        // 44px tall: this is a touch target on mobile.
+        "h-11 px-4 font-mono text-[11px] uppercase tracking-[0.16em] transition-colors duration-150",
+        "focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-gold",
+        "disabled:cursor-not-allowed disabled:opacity-40",
+        tone === "solid"
+          ? "bg-gold text-navy hover:bg-cream"
+          : "grid-cell text-cream/70 hover:text-gold",
+      )}
+    >
+      {children}
+    </button>
+  );
+}
+
+/** One cell of the stat strip. */
+function Cell({
+  label,
+  value,
+  tone,
+}: {
+  label: string;
+  value: string;
+  tone?: "gold";
+}) {
+  return (
+    <div className="grid-cell flex flex-col gap-1.5 px-3 py-2.5">
+      <span className="font-mono text-[9px] uppercase leading-none tracking-[0.14em] text-cream/50">
+        {label}
+      </span>
+      <span
+        className={cn(
+          "font-mono text-sm leading-none tabular-nums",
+          tone === "gold" ? "text-gold" : "text-cream",
+        )}
+      >
+        {value}
+      </span>
+    </div>
+  );
+}
+
+function ActCard({
   level,
+  index,
+  outline,
   unlocked,
   cleared,
   bestMs,
   onPlay,
 }: {
   level: LevelDefinition;
+  index: number;
+  outline: string;
   unlocked: boolean;
   cleared: boolean;
   bestMs: number | undefined;
   onPlay: (practice: boolean) => void;
 }) {
-  const car = CARS[level.recommendedCar];
+  const status: CardStatus = !unlocked ? "locked" : cleared ? "cleared" : "open";
 
   return (
-    <Panel
-      className={cn(
-        "flex flex-col p-5 transition-colors",
-        unlocked ? "hover:border-apex/50" : "opacity-55",
-      )}
+    <article
+      className="card-glow flex flex-col overflow-hidden border border-transparent grid-band"
+      style={status === "locked" ? GLOW_LOCKED : undefined}
     >
-      <div className="flex items-start justify-between gap-3">
-        <div>
-          <span className="label text-apex">{level.actLabel}</span>
-          <h2 className="mt-1.5 font-display text-2xl font-semibold leading-tight text-chalk">
+      {/* Face: the circuit, the act number, and what the act is called. */}
+      <div className="grid-face relative aspect-[4/3] p-4">
+        <TrackOutline path={outline} />
+
+        <div className="relative flex items-start justify-between gap-3">
+          <StatusPill status={status} />
+          <span className="font-display text-lg font-bold leading-none tracking-[0.06em] text-cream">
+            {String(index + 1).padStart(2, "0")}
+          </span>
+        </div>
+
+        <div className="absolute inset-x-4 bottom-4">
+          <h2 className="font-display text-3xl font-bold leading-none tracking-tight text-cream">
             {level.title}
           </h2>
-        </div>
-        <div className="flex shrink-0 flex-col items-end gap-1.5">
-          {cleared ? <Badge tone="lime">Cleared</Badge> : null}
-          {!unlocked ? (
-            <Badge tone="amber">{formatNumber(level.unlockXp)} XP</Badge>
-          ) : null}
-          {level.bossRace ? <Badge tone="ember">Boss</Badge> : null}
+          <p className="mt-2 font-mono text-[11px] leading-none text-cream/60">
+            {CIRCUIT_NAME}
+          </p>
         </div>
       </div>
 
-      <code className="mt-3 block text-[10px] leading-tight text-amber">
-        {level.concept}
-      </code>
-      <p className="mt-2 text-[11px] leading-relaxed text-fog">
-        {level.conceptDetail}
-      </p>
-
-      <dl className="mt-4 grid grid-cols-4 gap-3 border-t border-steel pt-4">
+      {/* The one number that matters before you drive: what you are chasing. */}
+      <div className="flex items-end justify-between gap-3 px-4 py-3.5">
         <div>
-          <dt className="label">Laps</dt>
-          <dd className="mt-1 font-mono text-sm tabular-nums text-chalk">
-            {level.laps}
-          </dd>
+          <p className="font-mono text-[11px] leading-none text-cream">Par time</p>
+          <p className="mt-1.5 font-mono text-[10px] uppercase leading-none tracking-[0.14em] text-cream/50">
+            {level.concept}
+          </p>
         </div>
-        <div>
-          <dt className="label">Rivals</dt>
-          <dd className="mt-1 font-mono text-sm tabular-nums text-chalk">
-            {level.rivals}
-          </dd>
-        </div>
-        <div>
-          <dt className="label">Par</dt>
-          <dd className="mt-1 font-mono text-sm tabular-nums text-chalk">
-            {formatLapTime(level.parMs)}
-          </dd>
-        </div>
-        <div>
-          <dt className="label">Target</dt>
-          <dd className="mt-1 font-mono text-sm tabular-nums text-chalk">
-            P{level.targetPosition}
-          </dd>
-        </div>
-      </dl>
-
-      {level.driftTarget > 0 ? (
-        <p className="mt-3 text-[10px] uppercase tracking-[0.14em] text-amber">
-          Drift gate · {formatNumber(level.driftTarget)}
-        </p>
-      ) : null}
-
-      <div className="mt-3 flex items-center justify-between text-[10px] text-fog">
-        <span>
-          Recommended: <span className="text-chalk">{car.name}</span>
+        <span className="font-mono text-2xl leading-none tabular-nums text-cream">
+          {formatLapTime(level.parMs)}
         </span>
-        {bestMs ? (
-          <span className="tabular-nums">Best {formatLapTime(bestMs)}</span>
-        ) : null}
       </div>
 
-      <div className="mt-4 flex flex-col gap-2 sm:flex-row">
-        <Button
-          variant="primary"
-          size="sm"
-          block
+      <div className="grid grid-cols-4 gap-px">
+        <Cell label="Laps" value={String(level.laps)} />
+        <Cell label="Rivals" value={String(level.rivals)} />
+        <Cell label="Target" value={`P${level.targetPosition}`} />
+        <Cell
+          label="Your best"
+          value={bestMs ? formatLapTime(bestMs) : "--"}
+          tone={bestMs ? "gold" : undefined}
+        />
+      </div>
+
+      <div className="grid grid-cols-[2fr_1fr] gap-px">
+        <CardAction
+          tone="solid"
           disabled={!unlocked}
           onClick={() => onPlay(false)}
         >
-          {level.erEnabled ? "Jack in" : "Race"}
-        </Button>
-        <Button
-          variant="ghost"
-          size="sm"
-          block
-          disabled={!unlocked}
-          onClick={() => onPlay(true)}
-        >
+          Race
+        </CardAction>
+        <CardAction tone="quiet" disabled={!unlocked} onClick={() => onPlay(true)}>
           Practice
-        </Button>
+        </CardAction>
       </div>
-    </Panel>
+    </article>
   );
 }
 
-export function CampaignScreen() {
+/**
+ * The roadmap card.
+ *
+ * Same frame and the same three bands as a playable act, so the grid reads as one
+ * set. What it does not do is imitate data it has not got: the stat strip states
+ * the reason it is empty instead of showing dashes that look like a loading bug.
+ */
+function ComingSoonCard({
+  act,
+  index,
+  outline,
+}: {
+  act: ComingSoonAct;
+  index: number;
+  outline: string;
+}) {
+  return (
+    <article
+      aria-disabled="true"
+      className="card-glow flex flex-col overflow-hidden border border-dashed grid-rule grid-band"
+      // An inert card gets a colourless bloom: the glow says "live", so the one
+      // card you cannot race should not have it.
+      style={GLOW_INERT}
+    >
+      <div className="grid-face relative aspect-[4/3] p-4 opacity-70">
+        <TrackOutline path={outline} muted />
+
+        <div className="relative flex items-start justify-between gap-3">
+          <StatusPill status="soon" />
+          <span className="font-display text-lg font-bold leading-none tracking-[0.06em] text-cream/50">
+            {String(index + 1).padStart(2, "0")}
+          </span>
+        </div>
+
+        <div className="absolute inset-x-4 bottom-4">
+          <h2 className="font-display text-3xl font-bold leading-none tracking-tight text-cream/70">
+            {act.title}
+          </h2>
+          <p className="mt-2 font-mono text-[11px] leading-none text-cream/40">
+            {act.concept}
+          </p>
+        </div>
+      </div>
+
+      <div className="px-4 py-3.5">
+        <p className="font-mono text-[11px] leading-relaxed text-cream/50">
+          {act.conceptDetail}
+        </p>
+      </div>
+    </article>
+  );
+}
+
+/**
+ * @param outline The circuit's plan view as an SVG path.
+ *
+ * Passed in rather than imported: `circuitOutlinePath` reaches `track/layout`, and
+ * importing that here would ship the spline builder and its 34 control points to
+ * the browser to draw one static shape. The page computes it at build time.
+ */
+export function CampaignScreen({ outline }: { outline: string }) {
   const router = useRouter();
   // Read the mirrored flag rather than `useWallet()`: this screen must not pull
   // the wallet adapter into its bundle. See `stores/profile.walletConnected`.
@@ -138,8 +315,6 @@ export function CampaignScreen() {
 
   const totalXp = xpCommitted + xpPending;
   const acts = CAMPAIGN_ORDER.map((id) => LEVELS[id]);
-  const endless = LEVELS["endless-time-attack"];
-  const clearedCount = acts.filter((level) => clearedLevels.includes(level.id)).length;
 
   const start = (level: LevelDefinition, practice: boolean) => {
     selectLevel(level.id);
@@ -149,76 +324,54 @@ export function CampaignScreen() {
   };
 
   return (
-    <div className="mx-auto w-full max-w-7xl px-4 py-8 sm:px-6 sm:py-12">
-      <header className="flex flex-col gap-4 sm:flex-row sm:items-end sm:justify-between">
+    <div className="w-full px-4 py-10 sm:px-8">
+      <header className="flex flex-wrap items-end justify-between gap-4">
         <div>
-          <span className="label">Campaign</span>
-          <h1 className="mt-2 font-display text-3xl font-bold tracking-tight text-chalk sm:text-4xl">
-            The Ephemeral
+          <span className="font-mono text-[10px] uppercase tracking-[0.18em] text-cream/45">
+            Campaign
+          </span>
+          <h1 className="mt-2 font-display text-3xl font-extrabold tracking-tight text-cream">
+            Championship
           </h1>
-          <p className="mt-2 max-w-2xl text-xs leading-relaxed text-fog">
-            Five acts. Each one hands you one more piece of the rollup and lets
-            you work out what it is for at speed.
-          </p>
         </div>
-        <div className="w-full sm:w-64">
-          <div className="flex items-baseline justify-between">
-            <span className="label">Progress</span>
-            <span className="font-mono text-xs tabular-nums text-chalk">
-              {clearedCount}/{acts.length}
-            </span>
-          </div>
-          <Meter value={clearedCount} max={acts.length} className="mt-2" />
-        </div>
+        <ChainStatus />
       </header>
 
-      <ChainStatus className="mt-6" />
-
-      <div className="mt-8 grid gap-4 lg:grid-cols-2 xl:grid-cols-3">
-        {acts.map((level) => (
-          <LevelCard
+      <div className="mt-8 grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
+        {acts.map((level, index) => (
+          <ActCard
             key={level.id}
             level={level}
+            index={index}
+            outline={outline}
             unlocked={isLevelUnlocked(level.unlockXp, totalXp)}
             cleared={clearedLevels.includes(level.id)}
             bestMs={bestTimesMs[level.id]}
             onPlay={(practice) => start(level, practice)}
           />
         ))}
+        <ComingSoonCard
+          act={COMING_SOON_ACT}
+          index={acts.length}
+          outline={outline}
+        />
       </div>
 
-      <section className="mt-10">
-        <span className="label">Endless</span>
-        <div className="mt-3 grid gap-4 lg:grid-cols-2 xl:grid-cols-3">
-          <LevelCard
-            level={endless}
-            unlocked
-            cleared={clearedLevels.includes(endless.id)}
-            bestMs={bestTimesMs[endless.id]}
-            onPlay={(practice) => start(endless, practice)}
-          />
-        </div>
-      </section>
-
       {!connected ? (
-        <Panel className="mt-10 flex flex-col items-start gap-3 p-5 sm:flex-row sm:items-center sm:justify-between">
-          <p className="text-xs leading-relaxed text-fog">
-            You are in Practice mode. Runs are fully playable but the XP stays on
-            this device and never reaches the Settlement Layer.
+        <div className="grid-band card-glow mt-4 flex flex-col items-start gap-3 p-4 sm:flex-row sm:items-center sm:justify-between">
+          <p className="font-ui text-xs leading-relaxed text-cream/60">
+            Offline mode. Every round is fully playable, but your times and XP are
+            saved on this device only.
           </p>
-          <ButtonLink href="/profile" variant="secondary" size="sm">
-            Connect to settle
-          </ButtonLink>
-        </Panel>
+          {/*
+            The real control, not a link to a page that explained it. This used to
+            point at /profile, which no longer exists — and sending someone to another
+            screen to press the button that is already in the header was a detour
+            either way.
+          */}
+          <ConnectButton size="sm" className="shrink-0" />
+        </div>
       ) : null}
-
-      <p className="mt-10 text-[10px] text-fog">
-        Story and design notes live in{" "}
-        <Link href="/settings" className="text-apex hover:underline">
-          settings
-        </Link>
-        .
-      </p>
     </div>
   );
 }

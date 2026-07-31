@@ -25,14 +25,17 @@ import { Button, ButtonLink } from "@/components/ui/Button";
 import { Badge } from "@/components/ui/Panel";
 import { ConnectButton } from "@/components/wallet/ConnectButton";
 import { ResultsOverlay, type SettleState } from "./ResultsOverlay";
+import { RaceLeaderboard } from "./RaceLeaderboard";
 import { SessionPanel } from "./SessionPanel";
 import { StoryStrip } from "./StoryStrip";
 import { LightweightHud, useHudPopups } from "./LightweightHud";
 import { Engine } from "@/game/engine/Engine";
 import { CARS, CAR_INDEX } from "@/game/config/cars";
+import { MAX_DRIVER_NAME_LENGTH } from "@/game/config/drivers";
 import { LEVEL_INDEX, type LevelDefinition } from "@/game/config/levels";
 import { QUALITY_PRESETS } from "@/game/config/quality";
 import { CHECKPOINTS_PER_LAP } from "@/game/track/Track";
+import { XP_PER_CONTACT } from "@/game/scoring/xp";
 import type { ControlScheme, GameBridge, GameEvent, Telemetry } from "@/game/types";
 import { detectQualityTier, getDeviceProfile } from "@/lib/device";
 import { generateSeed } from "@/lib/rng";
@@ -65,6 +68,8 @@ export function RaceShell({ level }: { level: LevelDefinition }) {
   const { refresh: refreshProfile } = useDriverProfile();
 
   const selectedCar = useRace((s) => s.selectedCar);
+  const driverName = useRace((s) => s.driverName);
+  const setDriverName = useRace((s) => s.setDriverName);
   const practice = useRace((s) => s.practice);
   const phase = useRace((s) => s.phase);
   const countdown = useRace((s) => s.countdown);
@@ -74,6 +79,7 @@ export function RaceShell({ level }: { level: LevelDefinition }) {
   const raceStore = useRace;
 
   const settings = useSettings();
+  const committedXp = useProfile((s) => s.xpCommitted);
   const creditLocalXp = useProfile((s) => s.creditLocalXp);
   const queuePendingRun = useProfile((s) => s.queuePendingRun);
   const resolvePendingRun = useProfile((s) => s.resolvePendingRun);
@@ -90,10 +96,13 @@ export function RaceShell({ level }: { level: LevelDefinition }) {
   const [baseSignature, setBaseSignature] = useState<string | null>(null);
   const [pendingRunId, setPendingRunId] = useState<string | null>(null);
 
-  // Detected once, then owned by the engine's frame-time governor, which may only
-  // demote. There is no user override to reconcile with.
+  // Detected once, and then left alone: the frame-time governor now only softens
+  // resolution under a sustained 25fps and never changes the tier mid-race.
+  // `high` is the pre-hydration guess as well, because that is what nearly every
+  // desktop can hold and the alternative was every browser that masks its GPU
+  // string racing at medium for no reason.
   const device = typeof window === "undefined" ? null : getDeviceProfile();
-  const tier = device ? detectQualityTier(device) : "medium";
+  const tier = device ? detectQualityTier(device) : "high";
   const preset = QUALITY_PRESETS[tier];
 
   const controls: ControlScheme = settings.controls ?? "keyboard";
@@ -148,7 +157,9 @@ export function RaceShell({ level }: { level: LevelDefinition }) {
 
         case "collision":
           engineRef.current?.registerImpact(event.severity);
-          spawnPopup("CONTACT", "penalty");
+          // The cost, not just the fact. A callout that only says CONTACT does not
+          // tell the player that contact is what is eating their XP.
+          spawnPopup(`CONTACT −${XP_PER_CONTACT} XP`, "penalty");
           break;
 
         case "story":
@@ -274,6 +285,10 @@ export function RaceShell({ level }: { level: LevelDefinition }) {
       config: {
         levelId: level.id,
         carId: selectedCar,
+        // Read once, at construction. The engine is created before the briefing is
+        // dismissed, so the name has to be settled before the grid is named — which
+        // is why the field is on the briefing rather than a mid-race setting.
+        driverName,
         seed: seedRef.current.toString(),
         quality: tier,
         controls,
@@ -306,6 +321,10 @@ export function RaceShell({ level }: { level: LevelDefinition }) {
   useEffect(() => {
     engineRef.current?.setControls(controls);
   }, [controls]);
+
+  useEffect(() => {
+    engineRef.current?.setDriverName(driverName);
+  }, [driverName]);
 
   // Reset transient race state on mount so a previous run's results do not flash.
   useEffect(() => {
@@ -588,6 +607,21 @@ export function RaceShell({ level }: { level: LevelDefinition }) {
         </div>
       ) : null}
 
+      {/*
+        Left-hand side, below the HUD's lap/position block. Hidden on narrow
+        viewports for the same reason as the session panel: there is not room for it
+        beside the road.
+      */}
+      {stage === "running" && !showResults ? (
+        <div className="absolute left-4 top-32 z-20 hidden lg:block">
+          <RaceLeaderboard
+            telemetry={telemetry}
+            address={wallet?.publicKey?.toBase58() ?? null}
+            committedXp={chainRun ? committedXp : null}
+          />
+        </div>
+      ) : null}
+
       {/* Countdown */}
       {stage === "running" && phase === "countdown" && countdown > 0 ? (
         <div className="pointer-events-none absolute inset-0 z-30 flex items-center justify-center">
@@ -615,6 +649,28 @@ export function RaceShell({ level }: { level: LevelDefinition }) {
           </h1>
           <code className="mt-3 block text-[11px] text-amber">{level.concept}</code>
           <p className="mt-3 text-xs leading-relaxed text-fog">{level.conceptDetail}</p>
+
+          {/*
+            Name entry lives here, not in a settings screen: it is the last thing
+            before the grid is named, and this is the only screen where changing it
+            has a visible consequence a moment later.
+          */}
+          <label className="mt-5 block">
+            <span className="label text-fog">Driver name</span>
+            <input
+              type="text"
+              value={driverName}
+              maxLength={MAX_DRIVER_NAME_LENGTH}
+              spellCheck={false}
+              autoComplete="off"
+              onChange={(event) => setDriverName(event.target.value)}
+              className="mt-1 w-full border border-steel bg-void px-2 py-2 font-mono text-sm uppercase tracking-wider text-chalk outline-none focus:border-apex"
+              aria-describedby="driver-name-hint"
+            />
+            <span id="driver-name-hint" className="mt-1 block text-[10px] text-fog">
+              Shown on the leaderboard. Stored in this browser only — never on chain.
+            </span>
+          </label>
 
           <dl className="mt-5 grid grid-cols-3 gap-4 border-y border-steel py-4 font-mono text-[10px]">
             <div>

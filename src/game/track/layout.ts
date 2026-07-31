@@ -43,9 +43,16 @@ const ALPHA = 0.5;
 /** Dense evaluations per control-point span, used for arc-length measurement. */
 const SUBDIVISIONS = 96;
 
-/** Road half-width bounds, metres. */
-const MIN_HALF_WIDTH = 4.6;
-const MAX_HALF_WIDTH = 7.6;
+/**
+ * Road half-width bounds, metres.
+ *
+ * 12.8m through the hairpin out to 16.8m on the straights — a wide, multi-lane
+ * circuit rather than a period road course. It was 9.2–15.2m, which left the
+ * tightest corners barely two car widths across once the kerb and edge line were
+ * taken out of it, and gave the lane markings nothing to divide.
+ */
+const MIN_HALF_WIDTH = 6.4;
+const MAX_HALF_WIDTH = 8.4;
 /** How sharply the road narrows as curvature rises. */
 const WIDTH_CURVATURE_GAIN = 170;
 

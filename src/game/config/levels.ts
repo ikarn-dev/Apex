@@ -8,13 +8,20 @@
 
 import type { CarId } from "./cars";
 
-export type LevelId =
-  | "act1-harbor"
-  | "act2-neon-mile"
-  | "act3-sector7"
-  | "act4-ridgeline"
-  | "act5-apex"
-  | "endless-time-attack";
+/**
+ * Playable levels.
+ *
+ * Two acts, deliberately. They are the complete argument the game exists to make:
+ * Act I puts a run on the Settlement Layer so the player feels the wait, and Act II
+ * hands it to an Ephemeral Session so they feel the wait disappear. Problem, then
+ * solution. Everything after that was elaboration on a point already made.
+ *
+ * The acts that used to follow — tick rate, the commit window, undelegate — are
+ * retired rather than deleted: their on-chain indices are reserved in
+ * `LEVEL_INDEX`, and the campaign advertises the next one as a roadmap card. See
+ * `COMING_SOON_ACT`.
+ */
+export type LevelId = "act1-harbor" | "act2-neon-mile";
 
 /**
  * Colours for the generated circuit.
@@ -40,15 +47,35 @@ export interface CityPalette {
   steel: number;
   /** Painted road markings. */
   line: number;
-  /** Roadside tree line. */
-  trunk: number;
-  canopy: number;
+  /**
+   * Barrier light strip, and the same strip through a corner warning.
+   *
+   * Drawn unlit and outside tone mapping, so these are the only two colours in
+   * the palette that read as emitted rather than reflected light. `ledWarn`
+   * replaces `led` from the advance board through to the corner exit, which is
+   * what makes an approaching corner visible before its geometry is.
+   */
+  led: number;
+  ledWarn: number;
+}
+
+/** One stop in the vertical sky gradient. `at` runs 0 at the horizon to 1 overhead. */
+export interface SkyStop {
+  at: number;
+  color: number;
 }
 
 export interface LevelEnvironment {
-  /** Horizon and zenith sky colours. */
-  skyTop: number;
-  skyBottom: number;
+  /**
+   * Vertical sky gradient, horizon first.
+   *
+   * A stop list rather than two endpoint colours. Two colours can only ever
+   * produce a linear wash, which is what made the old sky read as flat paint; real
+   * daylight is warm and bright at the horizon, pales through the middle, and
+   * deepens overhead. The dome interpolates between whatever stops are given, so
+   * re-theming the sky is editing this list.
+   */
+  sky: readonly SkyStop[];
   fog: number;
   /** Exponential fog density. Higher hides more distance = cheaper draw. */
   fogDensity: number;
@@ -78,7 +105,14 @@ export interface LevelDefinition {
   /** Short code shown in the level list, e.g. "ACT I". */
   actLabel: string;
   title: string;
-  /** The ER primitive this level exists to teach. */
+  /**
+   * Event type, and what makes this round different to drive.
+   *
+   * Player-facing race copy, so it is written the way a racing game writes it. The
+   * rollup mechanics behind a round live in `erEnabled` and `bankingEnabled` and are
+   * explained on the landing page — a driver picking a round wants to know the grid
+   * size and the surface, not the transaction model.
+   */
   concept: string;
   conceptDetail: string;
   laps: number;
@@ -110,39 +144,78 @@ export interface LevelDefinition {
 }
 
 /**
- * APEX International, mid-afternoon.
+ * APEX International at sunset, on a high desert plateau.
  *
- * A warm, high-sun daylight setting: one strong directional light for the shadow
- * pass, a bright sky gradient that also feeds the image-based lighting so the
- * car's metallic paint has something to reflect, and light haze to soften the
- * horizon rather than hide the circuit.
+ * A low sun almost on the deck, a sky that runs amber at the horizon into dusk
+ * overhead, and enough haze that the generated mesa horizon reads as distance
+ * rather than as geometry parked at the far plane. The same gradient feeds the
+ * image-based lighting, so the car's metallic paint picks up the sunset instead
+ * of rendering near-black.
+ *
+ * `fogDensity` is roughly three times the old daylight value. `FogExp2` falls off
+ * with the *square* of `density * distance`, so 0.00062 was doing almost nothing
+ * at any distance the camera can see — 8% at 560m — and the horizon sat there
+ * unhazed and looked like a wall.
  */
-export const DAYLIGHT_CIRCUIT: LevelEnvironment = {
-  skyTop: 0x5aa7de,
-  skyBottom: 0xe6f2f8,
-  fog: 0xcfe1ea,
-  fogDensity: 0.00062,
-  ground: 0x7ba861,
-  sunColor: 0xfff4dc,
-  sunIntensity: 2.6,
-  sunElevation: 0.78,
-  sunAzimuth: -0.85,
-  ambient: 0xdcebf2,
-  ambientIntensity: 1.05,
-  accent: 0x087ea4,
+export const DESERT_SUNSET: LevelEnvironment = {
+  // Amber on the deck, deepening to dusk overhead. The horizon stop is close to
+  // the fog colour so the two meet without a seam.
+  sky: [
+    { at: 0, color: 0xffd9a3 },
+    { at: 0.05, color: 0xffb268 },
+    { at: 0.16, color: 0xfb8f4c },
+    { at: 0.42, color: 0xdd6242 },
+    { at: 1, color: 0x5d3f6b },
+  ],
+  fog: 0xf2a468,
+  fogDensity: 0.0016,
+  ground: 0x6d4d35,
+  sunColor: 0xffb877,
+  sunIntensity: 2.35,
+  // 9° above the horizon: long shadows across the road, which is most of what
+  // sells the time of day.
+  sunElevation: 0.16,
+  sunAzimuth: -1.95,
+  ambient: 0xffcda6,
+  ambientIntensity: 1.0,
+  accent: 0x2ee06a,
   city: {
-    asphalt: 0x3a3f45,
-    kerbLight: 0xf1f3f6,
+    asphalt: 0x2c2f34,
+    kerbLight: 0xf2f4f7,
     kerbDark: 0xcf3340,
-    barrier: 0xdde1e6,
-    barrierTop: 0x1f7fa6,
-    plaza: 0x9aa08a,
-    verge: 0x7ba861,
-    steel: 0x9aa1ab,
-    line: 0xf6f8fa,
-    trunk: 0x6a4b32,
-    canopy: 0x4b8340,
+    barrier: 0x23262c,
+    barrierTop: 0x14161a,
+    plaza: 0x8b7154,
+    verge: 0x6d4d35,
+    steel: 0x8b929d,
+    line: 0xf7f9fb,
+    led: 0x3bff8c,
+    ledWarn: 0xffb32e,
   },
+};
+
+/**
+ * Act I: the same plateau earlier in the evening, hazier and less saturated.
+ *
+ * The opening act used to load a photographic backdrop. A 1.6:1 photograph is not
+ * a panorama, so it had to be wrapped three times around a cylinder, and the seam
+ * between wraps showed as a hard vertical edge against the sky. A gradient has no
+ * seam, no download, and no horizon to keep level.
+ */
+export const DESERT_HAZE: LevelEnvironment = {
+  ...DESERT_SUNSET,
+  sky: [
+    { at: 0, color: 0xffe6bd },
+    { at: 0.06, color: 0xffc98d },
+    { at: 0.2, color: 0xf6a469 },
+    { at: 0.48, color: 0xd97f57 },
+    { at: 1, color: 0x6f5578 },
+  ],
+  fog: 0xf6bd8b,
+  fogDensity: 0.0018,
+  sunColor: 0xffd0a0,
+  sunElevation: 0.21,
+  ambient: 0xffe0c2,
 };
 
 export const LEVELS: Record<LevelId, LevelDefinition> = {
@@ -151,13 +224,13 @@ export const LEVELS: Record<LevelId, LevelDefinition> = {
     act: 1,
     actLabel: "ACT I",
     title: "Cold Start",
-    concept: "Base layer",
+    concept: "Season opener",
     conceptDetail:
-      "This run is recorded straight onto the Settlement Layer: one write, at the end, and you feel the wait. Everything after this exists to remove that wait.",
+      "One lap of APEX International against a light grid. Learn where the circuit climbs, where it drops, and how late the hairpin really lets you brake.",
     laps: 1,
     rivals: 3,
-    parMs: 139000,
-    floorMs: 86000,
+    parMs: 94000,
+    floorMs: 58500,
     baseXp: 400,
     driftMultiplier: 0.04,
     cleanBonus: 150,
@@ -169,17 +242,17 @@ export const LEVELS: Record<LevelId, LevelDefinition> = {
     unlockXp: 0,
     recommendedCar: "zagato",
     gripScale: 1,
-    env: DAYLIGHT_CIRCUIT,
+    env: DESERT_HAZE,
     story: [
       {
         speaker: "HALO",
         at: "pre",
-        line: "No record, no session. Two laps on the main line so the ledger learns you exist.",
+        line: "Cold tyres, cold engine, cold driver. One lap. Just bring it back in one piece.",
       },
       {
         speaker: "HALO",
         at: "finish",
-        line: "Felt that pause at the line? That's the Settlement Layer thinking. We're going to fix that.",
+        line: "That'll do. You lost the most time in the hairpin — you're braking about twenty metres early.",
       },
     ],
   },
@@ -188,14 +261,14 @@ export const LEVELS: Record<LevelId, LevelDefinition> = {
     id: "act2-neon-mile",
     act: 2,
     actLabel: "ACT II",
-    title: "Delegation",
-    concept: "delegate → commit",
+    title: "Slipstream",
+    concept: "Full grid",
     conceptDetail:
-      "Your race account is handed off to an Ephemeral Session. Writes drop to ~10ms and cost you nothing. At the line you choose to commit — and only then is it real.",
+      "A full grid of five, and two straights long enough for a tow. Sit in the car ahead down the pit straight and you arrive at turn one with a run on it.",
     laps: 1,
     rivals: 5,
-    parMs: 139500,
-    floorMs: 86500,
+    parMs: 94000,
+    floorMs: 58500,
     baseXp: 700,
     driftMultiplier: 0.06,
     cleanBonus: 250,
@@ -207,211 +280,66 @@ export const LEVELS: Record<LevelId, LevelDefinition> = {
     unlockXp: 0,
     recommendedCar: "zagato",
     gripScale: 1,
-    env: DAYLIGHT_CIRCUIT,
+    env: DESERT_SUNSET,
     story: [
       {
         speaker: "HALO",
         at: "pre",
-        line: "Handing your race off the main line. Ten milliseconds a write, zero toll. Don't get attached — it isn't real until we commit.",
+        line: "Full grid this time. Five of them, and the two quick ones start ahead of you.",
       },
       {
         speaker: "HALO",
         at: "start",
-        line: "Session's live. Every checkpoint you clip is already on the rollup.",
+        line: "Green. Get in the tow down the straight and you'll have a run into turn one.",
       },
       {
         speaker: "HALO",
         at: "finish",
-        line: "Now bank it. One write to the Settlement Layer and the whole run is yours.",
-      },
-    ],
-  },
-
-  "act3-sector7": {
-    id: "act3-sector7",
-    act: 3,
-    actLabel: "ACT III",
-    title: "Tick Rate",
-    concept: "High-frequency writes",
-    conceptDetail:
-      "Every tick of a slide is its own state transition. Hold a drift and watch the tick counter climb into the thousands — on the base layer that single corner would bankrupt you.",
-    laps: 1,
-    rivals: 5,
-    parMs: 145500,
-    floorMs: 90000,
-    baseXp: 850,
-    driftMultiplier: 0.14,
-    cleanBonus: 300,
-    // Measured: a clean lap scores ~30, a drift-seeking lap ~360.
-    driftTarget: 50,
-    targetPosition: 3,
-    erEnabled: true,
-    bankingEnabled: false,
-    bossRace: false,
-    unlockXp: 2_500,
-    recommendedCar: "zagato",
-    // Act III keeps a lower-grip surface so controlled handbrake drift remains
-    // the level objective without changing the supplied circuit geometry.
-    gripScale: 0.72,
-    env: DAYLIGHT_CIRCUIT,
-    story: [
-      {
-        speaker: "KESTREL",
-        at: "pre",
-        line: "Count them, rookie. Every ten milliseconds of slide is a line in the session. Try that on the main line and you'd go broke in one corner.",
-      },
-      {
-        speaker: "KESTREL",
-        at: "start",
-        line: "That's it — stay sideways. The rollup doesn't care how many writes you throw at it.",
-      },
-      {
-        speaker: "HALO",
-        at: "finish",
-        line: "Four figures of writes, zero lamports out of your pocket. That's the whole trick.",
-      },
-    ],
-  },
-
-  "act4-ridgeline": {
-    id: "act4-ridgeline",
-    act: 4,
-    actLabel: "ACT IV",
-    title: "The Commit Window",
-    concept: "Finality as a choice",
-    conceptDetail:
-      "You may commit at the end of any lap. Bank early and the XP is permanent. Defer and every uncommitted lap adds +25% — but flatline now and you lose all of it, because none of it was ever settled.",
-    laps: 2,
-    rivals: 5,
-    parMs: 275500,
-    floorMs: 171000,
-    baseXp: 1_100,
-    driftMultiplier: 0.09,
-    cleanBonus: 400,
-    driftTarget: 0,
-    targetPosition: 2,
-    erEnabled: true,
-    bankingEnabled: true,
-    bossRace: false,
-    unlockXp: 10_000,
-    recommendedCar: "zagato",
-    gripScale: 0.92,
-    env: DAYLIGHT_CIRCUIT,
-    story: [
-      {
-        speaker: "VALIDATOR",
-        at: "pre",
-        line: "You mistake speed for a result. A number no one has settled is a rumour.",
-      },
-      {
-        speaker: "HALO",
-        at: "start",
-        line: "Ignore him. But — Rookie — he's not wrong about the rumour part. Bank when your gut says bank.",
-      },
-      {
-        speaker: "HALO",
-        at: 2,
-        line: "Multiplier's climbing. So is what you stand to lose.",
-      },
-    ],
-  },
-
-  "act5-apex": {
-    id: "act5-apex",
-    act: 5,
-    actLabel: "ACT V",
-    title: "Undelegate",
-    concept: "commit_and_undelegate",
-    conceptDetail:
-      "The clean close. Final state is flushed to the Settlement Layer and ownership of your account returns to the base layer, carrying everything you earned. Handing it back is the point, not the defeat.",
-    // One full supplied-circuit lap keeps the finale near five minutes.
-    laps: 1,
-    rivals: 5,
-    parMs: 140500,
-    floorMs: 87000,
-    baseXp: 1_600,
-    driftMultiplier: 0.1,
-    cleanBonus: 600,
-    driftTarget: 0,
-    targetPosition: 1,
-    erEnabled: true,
-    bankingEnabled: true,
-    bossRace: true,
-    unlockXp: 30_000,
-    recommendedCar: "zagato",
-    gripScale: 1,
-    env: DAYLIGHT_CIRCUIT,
-    story: [
-      {
-        speaker: "VALIDATOR",
-        at: "pre",
-        line: "Sanctioned circuit. My rules. Nothing you have done off the main line counts here.",
-      },
-      {
-        speaker: "HALO",
-        at: "start",
-        line: "One full lap. Win it and I close the session properly — committed and handed back.",
-      },
-      {
-        speaker: "HALO",
-        at: "finish",
-        line: "Committing and returning the account. Ledger's got it. That's permanent now — you're on the board, Rookie.",
-      },
-    ],
-  },
-
-  "endless-time-attack": {
-    id: "endless-time-attack",
-    act: 6,
-    actLabel: "ENDLESS",
-    title: "Time Attack",
-    concept: "Session on demand",
-    conceptDetail:
-      "One session, one clean lap set, commit or discard. No rivals, no excuses — just you and whatever the ledger already thinks you're worth.",
-    laps: 1,
-    rivals: 0,
-    parMs: 138000,
-    floorMs: 85500,
-    baseXp: 600,
-    driftMultiplier: 0.11,
-    cleanBonus: 350,
-    driftTarget: 0,
-    targetPosition: 1,
-    erEnabled: true,
-    bankingEnabled: true,
-    bossRace: false,
-    unlockXp: 0,
-    recommendedCar: "zagato",
-    gripScale: 0.96,
-    env: DAYLIGHT_CIRCUIT,
-    story: [
-      {
-        speaker: "HALO",
-        at: "pre",
-        line: "Session's open. Nobody's watching but the ledger.",
+        line: "Clean enough. Bank the run and it's on the board for good.",
       },
     ],
   },
 };
 
-export const CAMPAIGN_ORDER: LevelId[] = [
-  "act1-harbor",
-  "act2-neon-mile",
-  "act3-sector7",
-  "act4-ridgeline",
-  "act5-apex",
-];
+export const CAMPAIGN_ORDER: LevelId[] = ["act1-harbor", "act2-neon-mile"];
 
 export const LEVEL_IDS = Object.keys(LEVELS) as LevelId[];
 
-/** Stable index used by the on-chain program (u8). Order must never change. */
+/**
+ * Stable index used by the on-chain program (u8). Order must never change.
+ *
+ * Indices 2 to 5 belonged to the retired acts and to Time Attack. They are
+ * deliberately left unassigned rather than reused: a `DriverProfile` PDA already on
+ * chain records cleared levels by index, so handing index 2 to a different level
+ * would silently mark it cleared for every existing player.
+ * `programs/apex_racing/src/xp.rs` keeps its parameters for the same reason.
+ */
 export const LEVEL_INDEX: Record<LevelId, number> = {
   "act1-harbor": 0,
   "act2-neon-mile": 1,
-  "act3-sector7": 2,
-  "act4-ridgeline": 3,
-  "act5-apex": 4,
-  "endless-time-attack": 5,
+};
+
+/**
+ * The roadmap card the campaign shows after the playable acts.
+ *
+ * Not a `LevelDefinition`: it has no par time, no rival count and nothing to race,
+ * and giving it one would mean a level that exists in the type system, ships in the
+ * route table and cannot be played. A separate shape keeps "announced" and
+ * "playable" impossible to confuse.
+ */
+export interface ComingSoonAct {
+  actLabel: string;
+  title: string;
+  concept: string;
+  conceptDetail: string;
+}
+
+export const COMING_SOON_ACT: ComingSoonAct = {
+  actLabel: "ACT III",
+  title: "Drift Trial",
+  concept: "Drift scoring",
+  conceptDetail:
+    "A scored round rather than a race. Hold the car sideways through the esses and the hairpin, and the longer the angle holds the more the corner pays.",
 };
 
 export function isLevelId(value: string): value is LevelId {

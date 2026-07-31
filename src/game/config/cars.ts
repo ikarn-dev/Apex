@@ -38,8 +38,15 @@ export interface CarTuning {
   steerAngleMax: number;
   /** How fast the wheels reach commanded angle, rad/s. */
   steerRate: number;
-  /** Steering authority retained at top speed, 0-1. */
-  highSpeedSteerFactor: number;
+  /**
+   * How much lock the driver gets beyond the grip-limited angle, ≥ 1.
+   *
+   * `VehicleSim` limits steering to the Ackermann angle the tyres can actually
+   * use at the current speed, which falls with speed squared. This is the margin
+   * on top: 1.0 means the car can never be asked to exceed its own grip, and
+   * higher values leave room to provoke a slide deliberately.
+   */
+  steerLockMargin: number;
   /** Rear grip multiplier while the handbrake is down. Lower = easier drift. */
   handbrakeGripFactor: number;
   /** Extra downforce as a fraction of speed^2. Raises grip when fast. */
@@ -115,33 +122,51 @@ export const CARS: Record<CarId, CarDefinition> = {
     unlockXp: 0,
     tuning: {
       mass: 1710,
-      enginePower: 24600,
-      maxSpeed: 82,
+      enginePower: 27800,
+      // 338 km/h. This is an arcade racer and the circuit has two long straights
+      // to spend a top end on.
+      maxSpeed: 94,
       maxReverseSpeed: 12,
-      brakeForce: 27400,
+      // Scaled with the top speed: the same braking distance from a higher
+      // entry speed needs more force, or every corner arrives too fast to make.
+      brakeForce: 33500,
       gripFront: 13.2,
       gripRear: 12.1,
-      // A 1710kg GT, not a hot hatch: less lock, a slower rack, and much less
-      // authority left at speed. Inheriting the hatchback's numbers made this car
-      // dart at the smallest input and was the main reason it kept spearing into
-      // the barriers.
+      // A 1710kg GT, not a hot hatch. Full lock is available below about 40km/h;
+      // above that `VehicleSim` takes it away in proportion to what the tyres can
+      // use, so this is really the parking-speed limit.
       steerAngleMax: 0.42,
-      // The rack tracks the wheel briskly; the *feel* comes from `InputManager`,
-      // which models the wheel and its self-centring. Damping it here as well
-      // would stack two lags and make the car feel like it is steering on a
-      // delay.
-      steerRate: 3.6,
-      highSpeedSteerFactor: 0.18,
+      // The rack tracks the wheel closely; the *feel* comes from `InputManager`,
+      // which models the wheel and its self-centring. This used to be 3.6, whose
+      // 280ms time constant stacked on top of the wheel's own wind-on and made
+      // the car feel like it was steering on a delay at speed.
+      steerRate: 6.5,
+      // Headroom so the yaw ceiling is actually reachable through the rack and
+      // yaw lags. `VehicleSim` derives the steering lock from the yaw budget, so
+      // this no longer buys extra lock — it only stops full stick landing just
+      // short of the limit. It was 1.6, which put the ceiling at 62% of stick
+      // travel and left the rest of the wheel doing nothing.
+      steerLockMargin: 1.08,
       handbrakeGripFactor: 0.32,
-      downforce: 0.0021,
+      // 1.23g standing, 2.98g at 338km/h. It was 0.00008 — only 1.9g flat out,
+      // a 361m minimum radius, so at speed the car barely changed direction no
+      // matter what the wheel did. Still nowhere near the 0.0021 (18.6g) that
+      // made it uncontrollable.
+      downforce: 0.00016,
       drag: 0.46,
       rollingResistance: 8.4,
       wheelbase: 2.81,
-      halfWidth: 1.03,
-      halfLength: 2.38,
-      wheelRadius: 0.35,
+      // Measured off the normalised model by `npm run test:rig`, not off the road
+      // car's spec sheet. The barrier constraint puts this box's edge exactly on
+      // the wall, so a box narrower than the model buries the difference inside
+      // the barrier: at the old 1.03m, 180mm of the outboard side went in and the
+      // front wheel on that side vanished into the wall on every scrape.
+      halfWidth: 1.22,
+      halfLength: 2.45,
+      // The tyre the model actually draws is 736mm across.
+      wheelRadius: 0.368,
     },
-    stats: { acceleration: 9, topSpeed: 9, grip: 8, drift: 7 },
+    stats: { acceleration: 9, topSpeed: 10, grip: 9, drift: 7 },
   },
 };
 

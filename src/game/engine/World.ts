@@ -24,6 +24,7 @@ import {
   PlaneGeometry,
   Scene,
   SphereGeometry,
+  type Object3D,
   type Texture,
   type WebGLRenderer,
 } from "three";
@@ -33,6 +34,15 @@ import type { QualitySettings } from "../config/quality";
 export interface WorldResult {
   scene: Scene;
   sun: DirectionalLight;
+  /**
+   * The sky dome.
+   *
+   * The engine re-centres it on the camera every frame. That is not decoration: the
+   * dome has to sit inside the camera's far plane or the far plane clips it, and a
+   * radius small enough to clear a 1,400m far plane is smaller than this circuit,
+   * so a dome parked at the origin would leave the car driving outside the sky.
+   */
+  sky: Object3D;
   dispose: () => void;
 }
 
@@ -75,21 +85,38 @@ function buildEnvironment(
   return { texture: target.texture, dispose: () => target.dispose() };
 }
 
+/** Sample the level's sky gradient at a normalised height, 0 horizon to 1 zenith. */
+function sampleSky(stops: readonly Color[], positions: readonly number[], t: number): Color {
+  const clamped = Math.min(1, Math.max(0, t));
+  for (let i = 1; i < positions.length; i += 1) {
+    const upper = positions[i]!;
+    if (clamped > upper && i < positions.length - 1) continue;
+    const lower = positions[i - 1]!;
+    const span = upper - lower;
+    const local = span > 1e-6 ? (clamped - lower) / span : 0;
+    // Smoothstep between stops, so a five-stop list still reads as one continuous
+    // wash rather than five visible bands.
+    const eased = local * local * (3 - 2 * local);
+    return stops[i - 1]!.clone().lerp(stops[i]!, Math.min(1, Math.max(0, eased)));
+  }
+  return stops[stops.length - 1]!.clone();
+}
+
 function buildSkyDome(env: LevelEnvironment, radius: number): Mesh {
-  const geometry = new SphereGeometry(radius, 24, 16);
-  const top = new Color(env.skyTop);
-  const bottom = new Color(env.skyBottom);
+  // More vertical segments than a two-colour wash needs: the gradient now carries
+  // several stops, and banding shows up on a coarse dome.
+  const geometry = new SphereGeometry(radius, 32, 28);
+  const stops = env.sky.map((stop) => new Color(stop.color));
+  const positions = env.sky.map((stop) => stop.at);
 
   const position = geometry.getAttribute("position");
   const colors = new Float32Array(position.count * 3);
-  const mixed = new Color();
 
   for (let i = 0; i < position.count; i += 1) {
-    // Normalised height across the dome, biased so the gradient concentrates
-    // near the horizon where it is actually seen.
+    // Height above the horizon, so the gradient is defined over the visible half of
+    // the dome rather than the whole sphere.
     const y = position.getY(i) / radius;
-    const t = Math.pow(Math.max(0, y * 0.5 + 0.5), 0.55);
-    mixed.copy(bottom).lerp(top, t);
+    const mixed = sampleSky(stops, positions, y);
     colors[i * 3] = mixed.r;
     colors[i * 3 + 1] = mixed.g;
     colors[i * 3 + 2] = mixed.b;
@@ -107,8 +134,9 @@ function buildSkyDome(env: LevelEnvironment, radius: number): Mesh {
 
   const mesh = new Mesh(geometry, material);
   mesh.name = "sky";
-  // Always drawn first and never occludes anything.
-  mesh.renderOrder = -1;
+  // Always drawn first and never occludes anything. The authored landscape uses
+  // the next negative render band, then clears depth before circuit geometry.
+  mesh.renderOrder = -2;
   mesh.frustumCulled = false;
   return mesh;
 }
@@ -134,10 +162,16 @@ export function buildWorld(
   const dressing = new Group();
   dressing.name = "world";
 
-  const skyRadius = Math.max(quality.drawDistance * 0.95, trackRadius * 2.4);
-  const sky = buildSkyDome(env, skyRadius);
-  dressing.add(sky);
-  disposables.push(sky.geometry, sky.material as MeshBasicMaterial);
+  // Inside the far plane, and camera-locked. The old radius was
+  // `max(drawDistance * 0.95, trackRadius * 2.4)` — 2,590m against a 1,400m far
+  // plane — so the far plane sliced the dome and left a hard arc across the sky.
+  const dome = buildSkyDome(env, quality.drawDistance * 0.85);
+  dome.frustumCulled = false;
+  const sky = new Group();
+  sky.name = "sky-anchor";
+  sky.add(dome);
+  scene.add(sky);
+  disposables.push(dome.geometry, dome.material as MeshBasicMaterial);
 
   // Ground plane, generous enough to reach the fog in every direction.
   const groundSize = Math.max(trackRadius * 6, quality.drawDistance * 2);
@@ -154,6 +188,11 @@ export function buildWorld(
   // horizon read as a void under a floating road. Matching them closes it, and
   // the small offset keeps the two surfaces from z-fighting where they meet.
   ground.position.y = groundHeight - 0.15;
+  // The render pass is deliberately layered: sky (-2), ground (-1.5), authored
+  // landscape (-1), then circuit geometry (0+). The landscape clears depth after
+  // itself so roads always win; drawing this opaque plane later would instead
+  // overwrite the landscape colour and make the entire backdrop disappear.
+  ground.renderOrder = -1.5;
   ground.name = "ground";
   ground.receiveShadow = quality.shadowMapSize > 0;
   dressing.add(ground);
@@ -192,13 +231,14 @@ export function buildWorld(
   scene.add(sun.target);
 
   scene.add(new AmbientLight(env.ambient, env.ambientIntensity));
-  scene.add(
-    new HemisphereLight(env.skyTop, env.ground, env.ambientIntensity * 0.55),
-  );
+  // Sky light comes from the zenith stop, ground bounce from the ground colour.
+  const zenith = env.sky[env.sky.length - 1]!.color;
+  scene.add(new HemisphereLight(zenith, env.ground, env.ambientIntensity * 0.55));
 
   return {
     scene,
     sun,
+    sky,
     dispose: () => {
       for (const item of disposables) item.dispose();
     },

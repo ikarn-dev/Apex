@@ -13,12 +13,23 @@ import { create } from "zustand";
 import { persist } from "zustand/middleware";
 import type { CarId } from "@/game/config/cars";
 import { DEFAULT_CAR } from "@/game/config/cars";
+import { DEFAULT_DRIVER_NAME, sanitiseDriverName } from "@/game/config/drivers";
 import type { LevelId } from "@/game/config/levels";
 import type { RacePhase, RaceResult, FailureReason } from "@/game/types";
 
 interface RaceState {
   selectedCar: CarId;
   selectedLevel: LevelId | null;
+  /**
+   * The player's display name.
+   *
+   * Persisted here and nowhere else. It is not on the chain and it is not sent
+   * anywhere: the program identifies a driver by their wallet's `DriverProfile`
+   * PDA, so a name is purely a label this browser puts on the leaderboard. That
+   * also means it does not survive a change of device, which is the correct
+   * trade for something nobody else can see.
+   */
+  driverName: string;
   /** Practice skips the whole chain lifecycle. */
   practice: boolean;
 
@@ -40,6 +51,7 @@ interface RaceState {
 
   selectCar: (car: CarId) => void;
   selectLevel: (level: LevelId | null) => void;
+  setDriverName: (name: string) => void;
   setPractice: (practice: boolean) => void;
 
   setPhase: (phase: RacePhase) => void;
@@ -75,11 +87,15 @@ export const useRace = create<RaceState>()(
     (set) => ({
       selectedCar: DEFAULT_CAR,
       selectedLevel: null,
+      driverName: DEFAULT_DRIVER_NAME,
       practice: false,
       ...RACE_RUNTIME_DEFAULTS,
 
       selectCar: (selectedCar) => set({ selectedCar }),
       selectLevel: (selectedLevel) => set({ selectedLevel }),
+      // Sanitised on the way in, not on the way out, so what is persisted is
+      // already safe to render into a panel drawn over the race.
+      setDriverName: (name) => set({ driverName: sanitiseDriverName(name) }),
       setPractice: (practice) => set({ practice }),
 
       setPhase: (phase) => set({ phase }),
@@ -96,10 +112,21 @@ export const useRace = create<RaceState>()(
     }),
     {
       name: "apex.race.v1",
-      // Only the player's garage/level choice survives a reload.
+      // Only the player's garage/level choice and their name survive a reload.
       partialize: (s) => ({
         selectedCar: s.selectedCar,
         selectedLevel: s.selectedLevel,
+        driverName: s.driverName,
+      }),
+      // `driverName` was added after v1 shipped, so stored state predating it has
+      // no such key. Merging over the defaults rather than replacing them is what
+      // keeps that from arriving as `undefined` and rendering a blank row.
+      merge: (persisted, current) => ({
+        ...current,
+        ...(persisted as Partial<RaceState> | undefined),
+        driverName: sanitiseDriverName(
+          (persisted as Partial<RaceState> | undefined)?.driverName ?? current.driverName,
+        ),
       }),
     },
   ),

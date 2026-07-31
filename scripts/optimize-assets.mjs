@@ -27,9 +27,8 @@
  * model without waiting for a full optimise.
  */
 
-import { createHash } from "node:crypto";
 import { execFile } from "node:child_process";
-import { mkdir, mkdtemp, readFile, readdir, rm, stat, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readdir, rm, stat } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -37,6 +36,7 @@ import { promisify } from "node:util";
 import { NodeIO } from "@gltf-transform/core";
 import { ALL_EXTENSIONS } from "@gltf-transform/extensions";
 import draco3d from "draco3dgltf";
+import { writeAssetManifest } from "./lib/asset-manifest.mjs";
 
 const execFileAsync = promisify(execFile);
 
@@ -59,8 +59,10 @@ const OUTPUT_DIR = join(ROOT, "public", "models", "cars");
  */
 const BUDGETS = {
   rigged: {
-    bytes: 3 * 1024 * 1024,
-    vertices: 90_000,
+    // The player car keeps source wheel topology. It is one close-up object, so
+    // preserving the tyres is worth the extra geometry; rivals remain simplified.
+    bytes: 5 * 1024 * 1024,
+    vertices: 160_000,
     primitives: 56,
     textures: 24,
     textureVram: 22 * 1024 * 1024,
@@ -106,12 +108,46 @@ const HIDDEN_MATERIAL =
 /** Node names that must be kept even if their material looks interior. */
 const KEEP_NODE = /^(STEER_HR|WHEEL_|RIM_|GEO_Tyre|GEO_Disc|rim_)/i;
 
+/**
+ * Tyre materials, which the source ships as fully metallic.
+ *
+ * `EXT_WHEEL` and `EXT_WHEEL_0` are the two tyre carcasses — the front-left uses
+ * one and the other three share the other — and both arrive with
+ * `metallicFactor: 1.0`. Under this scene's image-based lighting a fully metallic
+ * surface reflects the sky instead of shading, so the tyre rendered as a bright
+ * chrome ring and the whole wheel read as a bare rim with no rubber on it. The
+ * runtime's own clamp in `Resources.prepareCar` only pulls metalness down to 0.55,
+ * which is still chrome.
+ *
+ * Corrected here rather than at load: this is a defect in one supplied model, the
+ * fix belongs with the model, and `inspect-assets` can then assert that no shipped
+ * tyre is metallic.
+ */
+export const RUBBER_MATERIAL = /^(EXT_WHEEL|EXT_TYRE|tyre|tire|rubber)/i;
+const RUBBER_ROUGHNESS = 0.92;
+/** Dark neutral rubber that remains visible under every level's sky lighting. */
+const RUBBER_BASE_COLOR = [0.2, 0.22, 0.23, 1];
+/** Source tyre topology; the HQ optimizer must not reduce the carcass below this. */
+const MIN_RIGGED_TYRE_TRIANGLES = 1_800;
+
 const VARIANTS = [
-  // The player's car: rigged, and the only one whose wheels are close enough to
-  // read.
-  { suffix: "", textureSize: "640", simplifyError: "0.004", rig: true },
-  // Rivals: same model and same textures, rig collapsed for draw calls.
-  { suffix: "-lq", textureSize: "384", simplifyError: "0.012", rig: false },
+  // The player's car: preserve source geometry around its close-up wheels. The
+  // body is still cabin-stripped, quantized and texture-compressed.
+  {
+    suffix: "",
+    textureSize: "640",
+    simplifyError: "0.004",
+    simplify: false,
+    rig: true,
+  },
+  // Rivals: same model and same textures, rig collapsed and geometry simplified.
+  {
+    suffix: "-lq",
+    textureSize: "384",
+    simplifyError: "0.012",
+    simplify: true,
+    rig: false,
+  },
 ];
 
 function argsFor(variant) {
@@ -133,7 +169,7 @@ function argsFor(variant) {
     "--weld",
     "true",
     "--simplify",
-    "true",
+    String(variant.simplify),
     "--simplify-error",
     variant.simplifyError,
     "--prune",
@@ -274,6 +310,23 @@ async function buildRuntimeSource(sourcePath, outputPath, withRig = true) {
     }
   }
 
+  // Rubber is not metal. Asserted, not best-effort: if the source renames its tyre
+  // materials the build should stop, because the failure it produces is a chrome
+  // tyre that looks like a missing one.
+  const rubber = root.listMaterials().filter((m) => RUBBER_MATERIAL.test(m.getName()));
+  if (rubber.length === 0) {
+    throw new Error(
+      `No tyre material in ${sourcePath} matched ${RUBBER_MATERIAL}. The source's ` +
+        `material names have changed, and its metallic tyres would ship as chrome.`,
+    );
+  }
+  for (const material of rubber) {
+    material.setBaseColorFactor(RUBBER_BASE_COLOR);
+    material.setMetallicFactor(0);
+    material.setRoughnessFactor(RUBBER_ROUGHNESS);
+    material.setMetallicRoughnessTexture(null);
+  }
+
   const rig = [];
   for (const pattern of RIG_NODES) {
     const node = root.listNodes().find((n) => !n.isDisposed() && pattern.test(n.getName()));
@@ -297,6 +350,7 @@ async function buildRuntimeSource(sourcePath, outputPath, withRig = true) {
     dropped,
     droppedVertices,
     rig: rig.map((node) => node.getName()),
+    rubber: rubber.map((material) => material.getName()),
   };
 }
 
@@ -324,7 +378,30 @@ async function measureRuntimeCost(path) {
     root.listNodes().some((node) => pattern.test(node.getName())),
   ).length;
 
-  return { vertices, primitives, textures: textures.length, textureVram, rig };
+  // Inspect the tyre primitive under each wheel group rather than trusting the
+  // group's combined bounds, which a rim or brake disc can satisfy by itself.
+  const tyres = [];
+  for (const pattern of RIG_NODES.slice(0, 4)) {
+    const wheel = root.listNodes().find((node) => pattern.test(node.getName()));
+    if (!wheel) continue;
+    const pending = [wheel];
+    let tyreVertices = 0;
+    let tyreTriangles = 0;
+    while (pending.length > 0) {
+      const node = pending.pop();
+      if (!node) continue;
+      pending.push(...node.listChildren());
+      for (const primitive of node.getMesh()?.listPrimitives() ?? []) {
+        if (!RUBBER_MATERIAL.test(primitive.getMaterial()?.getName() ?? "")) continue;
+        const positions = primitive.getAttribute("POSITION")?.getCount() ?? 0;
+        tyreVertices += positions;
+        tyreTriangles += Math.floor((primitive.getIndices()?.getCount() ?? positions) / 3);
+      }
+    }
+    tyres.push({ wheel: wheel.getName(), vertices: tyreVertices, triangles: tyreTriangles });
+  }
+
+  return { vertices, primitives, textures: textures.length, textureVram, rig, tyres };
 }
 
 function enforceBudget(name, bytes, cost, variant) {
@@ -354,6 +431,19 @@ function enforceBudget(name, bytes, cost, variant) {
   if (variant.rig && cost.rig !== RIG_NODES.length) {
     failures.push(`${cost.rig}/${RIG_NODES.length} rig nodes survived optimisation`);
   }
+  if (variant.rig) {
+    if (cost.tyres.length !== 4) {
+      failures.push(`${cost.tyres.length}/4 tyre carcasses survived optimisation`);
+    }
+    for (const tyre of cost.tyres) {
+      if (tyre.triangles < MIN_RIGGED_TYRE_TRIANGLES) {
+        failures.push(
+          `${tyre.wheel} tyre has ${tyre.triangles} triangles ` +
+            `(< ${MIN_RIGGED_TYRE_TRIANGLES} source-detail minimum)`,
+        );
+      }
+    }
+  }
   if (failures.length > 0) {
     throw new Error(`${name} exceeds the runtime budget: ${failures.join(", ")}`);
   }
@@ -362,54 +452,7 @@ function enforceBudget(name, bytes, cost, variant) {
 const SOURCE = "zagato.glb";
 const RUNTIME = "zagato";
 
-const MANIFEST_PATH = join(ROOT, "src", "game", "config", "generated", "car-assets.json");
 
-/** Short content hash. Long enough that a collision is not a real concern. */
-export async function hashFile(path) {
-  return createHash("sha256")
-    .update(await readFile(path))
-    .digest("hex")
-    .slice(0, 10);
-}
-
-/**
- * Write the content-hash manifest the runtime appends to every model URL.
- *
- * The pipeline writes fixed filenames, so without this there is nothing to tell a
- * browser that `zagato-lq.glb` changed. That is not a theoretical problem: these
- * files were served with `Cache-Control: immutable, max-age=1y`, so a browser that
- * had loaded an early Draco-compressed build kept using it against a loader that
- * no longer had a Draco decoder — and no amount of rebuilding or reloading could
- * dislodge it, because the URL never changed.
- *
- * Hashing the output and putting it in the query string makes each build a
- * distinct cache key, which is what allows the long immutable cache to be honest.
- */
-async function writeManifest() {
-  const assets = {};
-  for (const variant of VARIANTS) {
-    const name = `${RUNTIME}${variant.suffix}.glb`;
-    const path = join(OUTPUT_DIR, name);
-    if ((await fileSize(path)) === null) continue;
-    assets[`/models/cars/${name}`] = await hashFile(path);
-  }
-
-  await mkdir(dirname(MANIFEST_PATH), { recursive: true });
-  await writeFile(
-    MANIFEST_PATH,
-    `${JSON.stringify(
-      {
-        note:
-          "Generated by scripts/optimize-assets.mjs. Content hashes are appended to " +
-          "model URLs so a rebuilt asset is never served from a stale cache.",
-        assets,
-      },
-      null,
-      2,
-    )}\n`,
-  );
-  return assets;
-}
 
 async function main() {
   const force = process.argv.includes("--force");
@@ -477,7 +520,8 @@ async function main() {
       process.stdout.write(
         `\n    strip: kept ${report.kept}, dropped ${report.dropped} cabin nodes ` +
           `(−${report.droppedVertices.toLocaleString("en-US")} verts); ` +
-          `rig ${variant.rig ? `pinned (${report.rig.length})` : "collapsed"}` +
+          `rig ${variant.rig ? `pinned (${report.rig.length})` : "collapsed"}; ` +
+          `rubber ${report.rubber.join("+")}` +
           `\n    ${" ".repeat(18)}`,
       );
 
@@ -523,7 +567,7 @@ async function main() {
 
   // Always rewritten, even when every variant was up to date, so the manifest
   // cannot drift from the files on disk.
-  const assets = await writeManifest();
+  const assets = await writeAssetManifest();
   console.log("");
   for (const [url, hash] of Object.entries(assets)) {
     console.log(`  ${url.padEnd(30)} v=${hash}`);

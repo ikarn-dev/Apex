@@ -68,7 +68,7 @@ const STEPS = 60 * 150;
 console.log("\n  Containment — adversarial driving\n  " + "-".repeat(56));
 
 for (const policy of POLICIES) {
-  const level = getLevel("endless-time-attack")!;
+  const level = getLevel("act1-harbor")!;
   const director = new RaceDirector({
     level,
     carId: DEFAULT_CAR,
@@ -101,7 +101,13 @@ for (const policy of POLICIES) {
       worstOutsideAt = step;
     }
 
-    const drop = projection.height - state.y;
+    // Against the *banked* surface, not the centreline. The two differ by up to
+    // 0.65m at the edge of this layout's widest banked corner, so measuring from
+    // the centreline would leave that much slack in the check — and it is exactly
+    // the error that used to have the car hovering over the road.
+    const sample = track.samples[projection.index]!;
+    const surfaceY = projection.height + projection.lateral * Math.tan(sample.banking);
+    const drop = surfaceY - state.y;
     if (drop > worstDrop) worstDrop = drop;
   }
 

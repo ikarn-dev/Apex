@@ -25,6 +25,26 @@ export const RISK_PER_DEFERRED_LAP = 25;
 /** Cap so deferring cannot run away with the economy. */
 const MAX_RISK_PCT = 300;
 
+/**
+ * XP forfeited per registered contact, with a barrier or another car.
+ *
+ * Contact already cost the binary `cleanBonus`; this makes each individual hit
+ * cost something, which is what stops a driver from writing off the bonus on lap
+ * one and then using the barriers as a guide rail for the rest of the race.
+ *
+ * Deliberately derived from the collision *count* and nothing else. That count is
+ * already streamed to the rollup every tick as `collision_delta` and stored on the
+ * session, so the program can compute this term from state it already has — no new
+ * instruction argument, no new account field, and no change to a wire format that
+ * would need a migration.
+ */
+export const XP_PER_CONTACT = 120;
+
+/** Penalty in XP for a number of contacts, before it is capped at the subtotal. */
+export function penaltyXp(collisions: number): number {
+  return Math.max(0, Math.floor(collisions)) * XP_PER_CONTACT;
+}
+
 export interface XpInput {
   /** Finish time, ms. */
   totalMs: number;
@@ -68,10 +88,13 @@ export function computeXp(level: LevelDefinition, input: XpInput): XpBreakdown {
   const placing = PLACING_BONUS[Math.min(Math.max(input.position, 1), 6) - 1] ?? 0;
 
   const subtotal = pace + drift + clean + overtakes + placing;
+  // Capped at the subtotal: the program's arithmetic is unsigned, so a run that
+  // earned less than it forfeited has to floor at zero rather than wrap.
+  const penalty = Math.min(subtotal, penaltyXp(input.collisions));
   const risk = riskPercent(input.bankDeferredLaps);
-  const total = Math.floor((subtotal * risk) / 100);
+  const total = Math.floor(((subtotal - penalty) * risk) / 100);
 
-  return { pace, drift, clean, overtakes, placing, riskPercent: risk, total };
+  return { pace, drift, clean, overtakes, placing, penalty, riskPercent: risk, total };
 }
 
 /**

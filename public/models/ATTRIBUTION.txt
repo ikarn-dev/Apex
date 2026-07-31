@@ -1,0 +1,43 @@
+APEX runtime 3D assets — required attribution
+=============================================
+
+Car — /models/cars/zagato*.glb
+-----------------------------------
+"2020 Aston Martin DBS GT Zagato | www.vecarz.com"
+https://sketchfab.com/3d-models/2020-aston-martin-dbs-gt-zagato-wwwvecarzcom-7fe14e7e14dd49bd877caf919d396f31
+by vecarz (https://sketchfab.com/heynic)
+Licensed under CC BY-NC-SA 4.0
+https://creativecommons.org/licenses/by-nc-sa/4.0/
+
+Author attribution is required. Commercial use is NOT permitted. Modified
+versions must be distributed under the same license.
+
+Trees — /models/env/trees.glb
+-----------------------------------
+"Low Poly Forest Tree Pack"
+https://sketchfab.com/3d-models/low-poly-forest-tree-pack-5ff5a51e74324845a4e4905f182dfb2b
+by 99.Miles (https://sketchfab.com/99.Miles)
+Licensed under CC BY 4.0
+https://creativecommons.org/licenses/by/4.0/
+
+Building — /models/env/building.glb
+-----------------------------------
+"Mcdonalds-restaurant-low-poly"
+https://sketchfab.com/3d-models/mcdonalds-restaurant-low-poly-ee7f1bbe523545ffaba4def09d09d937
+by Dakta.Grower.Nzl (https://sketchfab.com/Dakta.Grower.Nzl)
+Licensed under CC BY 4.0
+https://creativecommons.org/licenses/by/4.0/
+
+Modifications
+-------------
+All models were optimised for web delivery: geometry quantisation
+(KHR_mesh_quantization), texture resizing and WebP compression, pruning of
+geometry not visible in game, and mesh joining. The tree pack additionally ships
+only its five tall atlas-mapped variants; its detailed trees and rocks are not
+included. No model's licence is changed by these modifications.
+
+Note on the car licence
+-----------------------
+CC BY-NC-SA 4.0 prohibits commercial use. This project cannot be monetised while
+that model ships. Replacing it with a permissively licensed or original vehicle is
+a prerequisite for any commercial release.

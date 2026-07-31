@@ -1,0 +1,11 @@
+Model Information:
+* title:	landscape forest & mountains
+* source:	https://sketchfab.com/3d-models/landscape-forest-mountains-94809d21d7aa4cfe9b658a111b35a42c
+* author:	dasy444 (https://sketchfab.com/dasy444)
+
+Model License:
+* license type:	CC-BY-4.0 (http://creativecommons.org/licenses/by/4.0/)
+* requirements:	Author must be credited. Commercial use is allowed.
+
+If you use this 3D model in your project be sure to copy paste this credit wherever you share it:
+This work is based on "landscape forest & mountains" (https://sketchfab.com/3d-models/landscape-forest-mountains-94809d21d7aa4cfe9b658a111b35a42c) by dasy444 (https://sketchfab.com/dasy444) licensed under CC-BY-4.0 (http://creativecommons.org/licenses/by/4.0/)

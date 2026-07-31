@@ -47,9 +47,20 @@ export const SKILL_TIERS: Record<"easy" | "mid" | "hard" | "boss", DriverSkill> 
   boss: { confidence: 1.02, reaction: 0.03, sloppiness: 0.2, aggression: 0.62 },
 };
 
-/** How far ahead to look for corners, scaled by speed. */
+/** How far ahead to place the steering aim point, scaled by speed. */
 const LOOKAHEAD_BASE = 14;
 const LOOKAHEAD_PER_SPEED = 1.05;
+
+/**
+ * Margin on top of the braking distance when scanning for corners, metres.
+ *
+ * The scan used to be `22 + speed * 2.2`, which is linear, while braking distance
+ * is quadratic in speed. At 82m/s the two happened to agree with 10m to spare; at
+ * 94m/s the car needed 231m to slow for the hairpin and was looking 229m ahead, so
+ * it committed to the corner before it had seen it. Deriving the scan from the
+ * braking distance keeps the margin constant at every top speed.
+ */
+const BRAKING_MARGIN = 30;
 
 /** Gravity used for the cornering-speed estimate. */
 const G = 9.81;
@@ -109,7 +120,12 @@ export class AiDriver {
 
     // Counter-steer into a slide rather than fighting it.
     const counterSteer = -state.slipAngle * this.skill.aggression * 0.85;
-    const rawSteer = clamp(headingError * 2.1 + counterSteer, -1, 1);
+    // The gain was 2.1, tuned when full stick commanded 1.6x the yaw the tyres
+    // could track — so the yaw ceiling was reached at 62% of stick travel and a
+    // modest steering request produced an outsized response. Now that the stick is
+    // proportional, the same 2.1 asks for about half the lock a corner needs at
+    // speed, and the field understeers into the barriers: rival contacts tripled.
+    const rawSteer = clamp(headingError * 3.6 + counterSteer, -1, 1);
 
     // Reaction lag: a first-order filter whose time constant is the skill's
     // reaction time.
@@ -120,18 +136,15 @@ export class AiDriver {
     // --- corner speed ------------------------------------------------------
     // Worst curvature over the braking zone decides the target speed.
     let worstCurvature = 0;
-    const scanDistance = 22 + speed * 2.2;
+    const decel = Math.max(1, this.tuning.brakeForce / this.tuning.mass);
+    const scanDistance = BRAKING_MARGIN + (speed * speed) / (2 * decel);
     for (let d = 6; d < scanDistance; d += 6) {
       const s = this.track.sampleAtDistance(distance + d);
       const k = Math.abs(s.curvature);
       if (k > worstCurvature) worstCurvature = k;
     }
 
-    const grip = this.tuning.gripRear * (1 + this.tuning.downforce * speed * speed);
-    const cornerSpeed =
-      worstCurvature > 1e-5
-        ? Math.sqrt((grip + G * 0.2) / worstCurvature)
-        : this.tuning.maxSpeed;
+    const cornerSpeed = this.cornerSpeedFor(worstCurvature);
 
     let targetSpeed = Math.min(
       this.tuning.maxSpeed,
@@ -173,5 +186,32 @@ export class AiDriver {
     }
 
     return this.input;
+  }
+
+  /**
+   * The speed a given curvature can actually be held at.
+   *
+   * This used to evaluate grip at the car's *current* speed, which is a different
+   * speed from the one it is braking down to — and with downforce in the mix the
+   * two disagree badly. Arriving at a hairpin at 90m/s, the old form saw 2.98g of
+   * downforce-assisted grip and concluded the corner could be taken at 32m/s; the
+   * car then arrived with only 1.4g available and went straight into the barrier.
+   * Rival contact counts across a race roughly tripled when downforce went up.
+   *
+   * Solving for the self-consistent speed removes the disagreement. With
+   * `grip(v) = gripRear * (1 + downforce * v²)` and `v² = grip(v) / k`:
+   *
+   *   v² = gripRear / (k - gripRear * downforce)
+   *
+   * The denominator goes non-positive exactly when downforce alone can hold the
+   * corner at any speed, which is the flat-out case and is capped by top speed.
+   */
+  private cornerSpeedFor(curvature: number): number {
+    if (curvature <= 1e-5) return this.tuning.maxSpeed;
+    // A small allowance for the banking the layout puts into every corner.
+    const assisted = this.tuning.gripRear + G * 0.2;
+    const denominator = curvature - this.tuning.gripRear * this.tuning.downforce;
+    if (denominator <= 1e-6) return this.tuning.maxSpeed;
+    return Math.min(this.tuning.maxSpeed, Math.sqrt(assisted / denominator));
   }
 }

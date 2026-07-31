@@ -39,9 +39,9 @@ export function ChainStatus({ className }: { className?: string }) {
   if (!CHAIN_ENABLED) {
     return (
       <div className={cn("flex flex-wrap items-center gap-2", className)}>
-        <Badge tone="amber">Simulation mode</Badge>
+        <Badge tone="amber">Offline</Badge>
         <span className="text-[10px] leading-tight text-fog">
-          No program deployed — XP is stored locally and cannot be settled.
+          Times and XP are saved on this device.
         </span>
       </div>
     );
@@ -53,7 +53,7 @@ export function ChainStatus({ className }: { className?: string }) {
         <Badge tone="fog">
           <span className="text-chalk">L1</span> {CLUSTER}
         </Badge>
-        <Badge tone="amber">Practice — wallet not connected</Badge>
+        <Badge tone="amber">Offline — no wallet connected</Badge>
       </div>
     );
   }

@@ -23,10 +23,22 @@
  * every distance the chase camera actually uses.
  */
 
-import { Color, Group, Mesh, MeshLambertMaterial, Vector3, type BufferGeometry } from "three";
+import {
+  Color,
+  Group,
+  Mesh,
+  MeshBasicMaterial,
+  MeshLambertMaterial,
+  Vector3,
+  type BufferGeometry,
+  type Material,
+} from "three";
 import type { CityPalette, LevelEnvironment } from "../config/levels";
 import type { QualitySettings } from "../config/quality";
 import { MeshBuilder } from "../world/MeshBuilder";
+import { forEachGlyphCell, glyphTextColumns, GLYPH_ROWS } from "../world/glyphs";
+import { smoothstep } from "../world/terrain";
+import { cornerWarningMask, findCorners, type Corner } from "./corners";
 import { CHECKPOINTS_PER_LAP, type Track, type TrackSample } from "./Track";
 
 /** Route samples per merged chunk. ~240m. */
@@ -60,7 +72,68 @@ const EDGE_LINE_WIDTH = 0.14;
 const TIMING_LINE_DEPTH = 0.34;
 const CHEQUER_CELLS = 12;
 const CHEQUER_DEPTH = 1.5;
-const PAINT_RISE = 0.04;
+/**
+ * How far paint sits proud of the asphalt, metres.
+ *
+ * Coplanar paint z-fights at every distance the chase camera uses, so all of it
+ * is lifted. 4cm was enough for that and not enough to be unambiguous: this road
+ * banks 4.5° and is 16.8m wide, so reconstructing the surface height from the
+ * nearest route sample instead of the exact one carries a couple of centimetres
+ * of error at the road's edge — enough that a lane dash 3m off centre could not
+ * be told apart from asphalt. 6cm is still invisible from the car and leaves the
+ * distinction clear.
+ */
+const PAINT_RISE = 0.06;
+
+/**
+ * Dashed lane dividers.
+ *
+ * The road is 12.8-16.8m wide, which is three lanes, and an expanse of bare
+ * asphalt that wide gives a driver nothing to judge closing speed or lateral
+ * position against. The dashes are the cheapest possible fix: they stream past at
+ * a rate proportional to speed, which is most of what makes a road feel fast.
+ *
+ * One route sample of dash every four gives a 2.5m mark on a 10m period.
+ */
+const LANE_COUNT = 3;
+const LANE_LINE_WIDTH = 0.16;
+const LANE_DASH_PERIOD = 4;
+/** Clear space kept between the outermost lane line and the edge line. */
+const LANE_EDGE_MARGIN = 0.25;
+
+/**
+ * Corner warning boards painted on the road.
+ *
+ * A chevron per severity step plus one, so a gentle bend gets two and a hairpin
+ * four, followed by the advisory speed in painted numerals. Both sit on the
+ * approach, `BOARD_LEAD` metres before the turn-in point.
+ */
+const CHEVRON_SPACING = 7.5;
+const CHEVRON_HALF_WIDTH = 2.1;
+const CHEVRON_HALF_LENGTH = 1.5;
+const CHEVRON_BAR = 0.46;
+
+/** Painted numeral cell size: lateral, then along the route. Metres. */
+const NUMERAL_CELL = 0.42;
+const NUMERAL_CELL_ALONG = 0.78;
+/** Gap between the numerals and the last chevron, metres. */
+const NUMERAL_LEAD = 5.5;
+
+/**
+ * Barrier light strip.
+ *
+ * Chevrons on the inner face of both barriers, pointing the way the road goes,
+ * amber instead of green from each advance board through to the corner exit. They
+ * are drawn unlit and outside tone mapping, so they read as emitted light against
+ * a low sun rather than as painted panels.
+ */
+const LED_SPACING = 1;
+const LED_BOTTOM = 0.42;
+const LED_TOP = 0.88;
+const LED_HALF_LENGTH = 0.62;
+const LED_BAR = 0.17;
+/** How far proud of the barrier face the strip sits, metres. */
+const LED_INSET = 0.05;
 
 /** Route samples between lighting columns, alternating sides. ~47m. */
 const LIGHT_SPACING = 19;
@@ -68,20 +141,6 @@ const LIGHT_HEIGHT = 9.2;
 
 const GANTRY_HEIGHT = 7.2;
 const GANTRY_POST = 0.42;
-
-/** Roadside trees, placed off the outer edge of the run-off. */
-const TREE_SPACING = 11;
-
-function smoothstep(t: number): number {
-  return t * t * (3 - 2 * t);
-}
-
-/** Deterministic 32-bit hash. No `Math.random`: the scene must be reproducible. */
-function hash(a: number, b: number): number {
-  let h = Math.imul(a, 374761393) + Math.imul(b, 668265263);
-  h = Math.imul(h ^ (h >>> 13), 1274126177);
-  return ((h ^ (h >>> 16)) >>> 0) / 4294967296;
-}
 
 interface BarrierRing {
   faceBottom: number;
@@ -95,9 +154,15 @@ export class CircuitView {
   /** Height of the ground plane the circuit's run-off banks down to. */
   readonly groundHeight: number;
 
+  /** Every corner on the lap, with its direction and advisory speed. */
+  readonly corners: readonly Corner[];
+
   private readonly colors: Record<keyof CityPalette, Color>;
   private readonly geometries: BufferGeometry[] = [];
   private readonly material: MeshLambertMaterial;
+  private readonly glowMaterial: MeshBasicMaterial;
+  /** Per-sample corner direction, 0 on the straights. Colours the barrier strip. */
+  private readonly warning: Int8Array;
   private disposed = false;
 
   constructor(
@@ -126,6 +191,19 @@ export class CircuitView {
     // PBR shader it cannot use.
     this.material = new MeshLambertMaterial({ vertexColors: true, name: "circuit" });
 
+    // Unlit, and outside tone mapping, which is the whole point: the barrier
+    // strip has to stay bright when the sun is 9° above the horizon and every
+    // lit surface around it has gone warm and dim. Fog is left on so a strip
+    // 600m away hazes out instead of picking the horizon out in hard green.
+    this.glowMaterial = new MeshBasicMaterial({
+      vertexColors: true,
+      toneMapped: false,
+      name: "circuit-glow",
+    });
+
+    this.corners = findCorners(track);
+    this.warning = cornerWarningMask(track, this.corners);
+
     this.build();
   }
 
@@ -135,28 +213,44 @@ export class CircuitView {
     for (let start = 0; start < n; start += CHUNK) {
       const end = Math.min(start + CHUNK, n);
       const builder = new MeshBuilder();
+      const glow = new MeshBuilder();
 
       this.addRoad(builder, start, end);
       for (const side of [-1, 1] as const) {
         this.addKerb(builder, start, end, side);
         this.addEdgeLine(builder, start, end, side);
         this.addBarrier(builder, start, end, side);
+        this.addBarrierLights(glow, start, end, side);
         this.addRunoff(builder, start, end, side);
-        this.addTrees(builder, start, end, side);
       }
+      this.addLaneLines(builder, start, end);
       this.addLightingColumns(builder, start, end);
       this.addMarkings(builder, start, end);
+      this.addCornerBoards(builder, start, end);
 
-      if (builder.empty) continue;
-      const geometry = builder.build(`circuit-${start / CHUNK}`);
-      this.geometries.push(geometry);
-      const mesh = new Mesh(geometry, this.material);
+      const index = start / CHUNK;
       // Barriers, gantries and the tree line are what make the shadow pass worth
       // running; the road itself only receives.
-      mesh.castShadow = this.quality.shadowMapSize > 0;
-      mesh.receiveShadow = this.quality.shadowMapSize > 0;
-      this.group.add(mesh);
+      this.emit(builder, this.material, `circuit-${index}`, this.quality.shadowMapSize > 0);
+      // The strip neither casts nor receives: it is light, not a surface.
+      this.emit(glow, this.glowMaterial, `circuit-glow-${index}`, false);
     }
+  }
+
+  private emit(
+    builder: MeshBuilder,
+    material: Material,
+    name: string,
+    shadows: boolean,
+  ): void {
+    if (builder.empty) return;
+    const geometry = builder.build(name);
+    this.geometries.push(geometry);
+    const mesh = new Mesh(geometry, material);
+    mesh.name = name;
+    mesh.castShadow = shadows;
+    mesh.receiveShadow = shadows;
+    this.group.add(mesh);
   }
 
   /**
@@ -262,6 +356,56 @@ export class CircuitView {
   }
 
   /**
+   * Dashed lane dividers.
+   *
+   * A 16.8m road is three lanes, and bare asphalt that wide gives a driver
+   * nothing to judge lateral position or closing speed against. Dashes are the
+   * cheapest possible fix and they do most of the work of making a road feel
+   * fast, because they stream past at a rate proportional to speed.
+   */
+  private addLaneLines(builder: MeshBuilder, start: number, end: number): void {
+    const n = this.track.samples.length;
+    const line = this.colors.line;
+    const half = LANE_LINE_WIDTH / 2;
+
+    for (let i = start; i < end; i += 1) {
+      if (i % LANE_DASH_PERIOD !== 0) continue;
+      const a = this.track.samples[i % n]!;
+      const b = this.track.samples[(i + 1) % n]!;
+
+      for (let lane = 1; lane < LANE_COUNT; lane += 1) {
+        const centreA = this.laneLateral(a, lane / LANE_COUNT);
+        const centreB = this.laneLateral(b, lane / LANE_COUNT);
+        // Along the route first, then across, so the painted face points up.
+        const p0 = this.surfacePoint(a, 1, centreA - half, PAINT_RISE);
+        const p1 = this.surfacePoint(b, 1, centreB - half, PAINT_RISE);
+        const p2 = this.surfacePoint(b, 1, centreB + half, PAINT_RISE);
+        const p3 = this.surfacePoint(a, 1, centreA + half, PAINT_RISE);
+        builder.quad(
+          builder.vertex(p0.x, p0.y, p0.z, line),
+          builder.vertex(p1.x, p1.y, p1.z, line),
+          builder.vertex(p2.x, p2.y, p2.z, line),
+          builder.vertex(p3.x, p3.y, p3.z, line),
+        );
+      }
+    }
+  }
+
+  /** Lateral offset of a lane boundary, `fraction` running 0 (left) to 1 (right). */
+  private laneLateral(sample: TrackSample, fraction: number): number {
+    const inner = this.paintedHalfWidth(sample);
+    return -inner + 2 * inner * fraction;
+  }
+
+  /** Half-width available for paint: inboard of the kerb and the edge line. */
+  private paintedHalfWidth(sample: TrackSample): number {
+    return Math.max(
+      0.5,
+      sample.halfWidth - KERB_WIDTH - EDGE_LINE_WIDTH - LANE_EDGE_MARGIN,
+    );
+  }
+
+  /**
    * Concrete barrier, inner face on the collision limit.
    *
    * The outward-facing panel is deliberately not emitted: it is only visible from
@@ -308,6 +452,96 @@ export class CircuitView {
       capInner: builder.vertex(top.x, top.y, top.z, cap),
       capOuter: builder.vertex(back.x, back.y, back.z, cap),
     };
+  }
+
+  /**
+   * The barrier light strip: a chevron on the inner face pointing along the road.
+   *
+   * Amber instead of green from each advance board through to the corner exit, so
+   * a corner announces itself while its geometry is still hidden by the barrier
+   * on the approach — which is exactly the case a low sun and a blind crest make
+   * hardest to read.
+   */
+  private addBarrierLights(
+    builder: MeshBuilder,
+    start: number,
+    end: number,
+    side: number,
+  ): void {
+    const n = this.track.samples.length;
+    const middle = (LED_BOTTOM + LED_TOP) / 2;
+    const first = Math.ceil(start / LED_SPACING) * LED_SPACING;
+
+    for (let i = first; i < end; i += LED_SPACING) {
+      const index = i % n;
+      const sample = this.track.samples[index]!;
+      const color = this.warning[index] !== 0 ? this.colors.ledWarn : this.colors.led;
+      // Two bars meeting at a tip that points the way the road goes.
+      const bar = (fromUp: number) =>
+        this.addBarrierBar(
+          builder,
+          sample,
+          side,
+          -LED_HALF_LENGTH,
+          fromUp,
+          LED_HALF_LENGTH,
+          middle,
+          color,
+        );
+      bar(LED_BOTTOM);
+      bar(LED_TOP);
+    }
+  }
+
+  /** One bar of a barrier chevron, in (along, up) coordinates on the inner face. */
+  private addBarrierBar(
+    builder: MeshBuilder,
+    sample: TrackSample,
+    side: number,
+    fromAlong: number,
+    fromUp: number,
+    toAlong: number,
+    toUp: number,
+    color: Color,
+  ): void {
+    const dAlong = toAlong - fromAlong;
+    const dUp = toUp - fromUp;
+    const length = Math.hypot(dAlong, dUp);
+    if (length < 1e-6) return;
+    const half = LED_BAR / 2;
+    const pAlong = (-dUp / length) * half;
+    const pUp = (dAlong / length) * half;
+
+    const corners: [number, number][] = [
+      [fromAlong + pAlong, fromUp + pUp],
+      [toAlong + pAlong, toUp + pUp],
+      [toAlong - pAlong, toUp - pUp],
+      [fromAlong - pAlong, fromUp - pUp],
+    ];
+    // `forward x up` is -right, so a counter-clockwise loop in (along, up) faces
+    // the road from the right-hand barrier and away from it on the left.
+    const clockwise = shoelace(corners) < 0;
+    if (side > 0 ? clockwise : !clockwise) corners.reverse();
+
+    const indices = corners.map(([along, up]) => {
+      const point = this.barrierFacePoint(sample, side, along, up);
+      return builder.vertex(point.x, point.y, point.z, color);
+    });
+    builder.quad(indices[0]!, indices[1]!, indices[2]!, indices[3]!);
+  }
+
+  /** A point on the barrier's inner face, offset along the route. */
+  private barrierFacePoint(
+    sample: TrackSample,
+    side: number,
+    along: number,
+    up: number,
+  ): Vector3 {
+    const point = this.surfacePoint(sample, side, sample.halfWidth - LED_INSET, up);
+    point.x += sample.fx * along;
+    point.y += sample.slope * along;
+    point.z += sample.fz * along;
+    return point;
   }
 
   /**
@@ -391,41 +625,6 @@ export class CircuitView {
     }
   }
 
-  /** Tree line beyond the run-off, for depth cues at speed. */
-  private addTrees(builder: MeshBuilder, start: number, end: number, side: number): void {
-    const n = this.track.samples.length;
-    const trunk = this.colors.trunk;
-    const canopy = this.colors.canopy;
-    const first = Math.ceil(start / TREE_SPACING) * TREE_SPACING;
-
-    for (let i = first; i < end; i += TREE_SPACING) {
-      const sample = this.track.samples[i % n]!;
-      const seed = hash(i, side);
-      // Roughly a third of the slots stay empty so the line does not read as a
-      // hedge, and the rest scatter in depth.
-      if (seed < 0.34) continue;
-
-      const inner = sample.halfWidth + BARRIER_THICKNESS;
-      const reach = this.runoffReach(sample.y);
-      const lateral = inner + reach * (1.04 + seed * 0.5);
-      const base = this.surfacePoint(sample, side, lateral, 0);
-      const ground = this.groundHeight;
-      const height = 5.5 + seed * 4.5;
-      const spread = 1.9 + seed * 1.1;
-
-      builder.box(base.x - 0.22, ground - 1, base.z - 0.22, 0.44, height * 0.42, 0.44, trunk);
-      builder.box(
-        base.x - spread / 2,
-        ground + height * 0.34,
-        base.z - spread / 2,
-        spread,
-        height * 0.66,
-        spread,
-        canopy,
-      );
-    }
-  }
-
   /** Timing lines, the start/finish chequer, and a gantry over each gate. */
   private addMarkings(builder: MeshBuilder, start: number, end: number): void {
     const n = this.track.samples.length;
@@ -467,6 +666,67 @@ export class CircuitView {
     }
   }
 
+  /**
+   * Advance warning boards, painted on the approach to every corner.
+   *
+   * A chevron per severity step plus one — two for a gentle bend, four for the
+   * hairpin — pointing the way the road turns, followed by the advisory speed in
+   * painted numerals. Both come from `findCorners`, which derives them from the
+   * same smoothed curvature the AI brakes on, so the signs cannot disagree with
+   * the road they are painted on.
+   */
+  private addCornerBoards(builder: MeshBuilder, start: number, end: number): void {
+    for (const corner of this.corners) {
+      if (corner.boardIndex < start || corner.boardIndex >= end) continue;
+      this.addCornerBoard(builder, corner);
+    }
+  }
+
+  private addCornerBoard(builder: MeshBuilder, corner: Corner): void {
+    const n = this.track.samples.length;
+    const spacing = this.track.sampleSpacing;
+    const line = this.colors.line;
+    const chevrons = corner.severity + 1;
+
+    const at = (metres: number): TrackSample =>
+      this.track.samples[(corner.boardIndex + Math.round(metres / spacing)) % n]!;
+
+    for (let step = 0; step < chevrons; step += 1) {
+      const sample = at(step * CHEVRON_SPACING);
+      const tip = corner.direction * CHEVRON_HALF_WIDTH;
+      const tail = -corner.direction * CHEVRON_HALF_WIDTH;
+      // Two strokes meeting at a tip on the inside of the bend: a chevron the
+      // driver reads as "the road goes that way".
+      this.addRoadBar(builder, sample, tail, -CHEVRON_HALF_LENGTH, tip, 0, CHEVRON_BAR, line);
+      this.addRoadBar(builder, sample, tail, CHEVRON_HALF_LENGTH, tip, 0, CHEVRON_BAR, line);
+    }
+
+    const text = String(corner.advisoryKph);
+    const width = glyphTextColumns(text) * NUMERAL_CELL;
+    const sample = at((chevrons - 1) * CHEVRON_SPACING + NUMERAL_LEAD);
+    // Painted on the outside of the bend, which is the half of the road the
+    // racing line is leaving free anyway.
+    const usable = this.paintedHalfWidth(sample);
+    const centre = -corner.direction * Math.max(0, usable - width / 2 - 0.2);
+    const length = GLYPH_ROWS * NUMERAL_CELL_ALONG;
+
+    forEachGlyphCell(text, (column, row) => {
+      const fromLateral = centre - width / 2 + column * NUMERAL_CELL;
+      // Row 0 is the top of the digit and has to be the far end from the driver,
+      // or the number reads upside down on the approach.
+      const toAlong = length / 2 - row * NUMERAL_CELL_ALONG;
+      this.addRoadQuad(
+        builder,
+        sample,
+        fromLateral,
+        fromLateral + NUMERAL_CELL,
+        toAlong - NUMERAL_CELL_ALONG,
+        toAlong,
+        line,
+      );
+    });
+  }
+
   /** A quad on the road surface, in centreline-relative coordinates. */
   private addRoadQuad(
     builder: MeshBuilder,
@@ -477,19 +737,68 @@ export class CircuitView {
     toAlong: number,
     color: Color,
   ): void {
-    const corner = (lateral: number, along: number) =>
-      builder.vertex(
-        sample.x + sample.rx * lateral + sample.fx * along,
-        sample.y + lateral * Math.tan(sample.banking) + along * sample.slope + PAINT_RISE,
-        sample.z + sample.rz * lateral + sample.fz * along,
-        color,
-      );
     // Along-track first, then across, so the painted face points up.
     builder.quad(
-      corner(fromLateral, fromAlong),
-      corner(fromLateral, toAlong),
-      corner(toLateral, toAlong),
-      corner(toLateral, fromAlong),
+      this.roadVertex(builder, sample, fromLateral, fromAlong, color),
+      this.roadVertex(builder, sample, fromLateral, toAlong, color),
+      this.roadVertex(builder, sample, toLateral, toAlong, color),
+      this.roadVertex(builder, sample, toLateral, fromAlong, color),
+    );
+  }
+
+  /**
+   * A thick painted stroke on the road, in centreline-relative coordinates.
+   *
+   * Unlike `addRoadQuad` the stroke can run at any angle, so the winding cannot
+   * be fixed at authoring time. `right x forward` is -Y, which makes a clockwise
+   * loop in (lateral, along) the one whose face points up; getting it backwards
+   * culls the paint and leaves the board invisible.
+   */
+  private addRoadBar(
+    builder: MeshBuilder,
+    sample: TrackSample,
+    fromLateral: number,
+    fromAlong: number,
+    toLateral: number,
+    toAlong: number,
+    thickness: number,
+    color: Color,
+  ): void {
+    const dLateral = toLateral - fromLateral;
+    const dAlong = toAlong - fromAlong;
+    const length = Math.hypot(dLateral, dAlong);
+    if (length < 1e-6) return;
+    const half = thickness / 2;
+    const pLateral = (-dAlong / length) * half;
+    const pAlong = (dLateral / length) * half;
+
+    const corners: [number, number][] = [
+      [fromLateral + pLateral, fromAlong + pAlong],
+      [toLateral + pLateral, toAlong + pAlong],
+      [toLateral - pLateral, toAlong - pAlong],
+      [fromLateral - pLateral, fromAlong - pAlong],
+    ];
+    if (shoelace(corners) > 0) corners.reverse();
+
+    const indices = corners.map(([lateral, along]) =>
+      this.roadVertex(builder, sample, lateral, along, color),
+    );
+    builder.quad(indices[0]!, indices[1]!, indices[2]!, indices[3]!);
+  }
+
+  /** A vertex on the painted road surface, in centreline-relative coordinates. */
+  private roadVertex(
+    builder: MeshBuilder,
+    sample: TrackSample,
+    lateral: number,
+    along: number,
+    color: Color,
+  ): number {
+    return builder.vertex(
+      sample.x + sample.rx * lateral + sample.fx * along,
+      sample.y + lateral * Math.tan(sample.banking) + along * sample.slope + PAINT_RISE,
+      sample.z + sample.rz * lateral + sample.fz * along,
+      color,
     );
   }
 
@@ -532,8 +841,20 @@ export class CircuitView {
     for (const geometry of this.geometries) geometry.dispose();
     this.geometries.length = 0;
     this.material.dispose();
+    this.glowMaterial.dispose();
     this.group.clear();
   }
+}
+
+/** Twice the signed area of a closed 2D loop. Sign gives the winding direction. */
+function shoelace(points: readonly [number, number][]): number {
+  let sum = 0;
+  for (let i = 0; i < points.length; i += 1) {
+    const [ax, ay] = points[i]!;
+    const [bx, by] = points[(i + 1) % points.length]!;
+    sum += ax * by - bx * ay;
+  }
+  return sum;
 }
 
 /** Box aligned to the track frame, for beams and booms that cross the road. */

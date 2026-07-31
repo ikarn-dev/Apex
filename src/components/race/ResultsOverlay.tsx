@@ -13,7 +13,7 @@ import { Badge, Panel, PanelHeader } from "@/components/ui/Panel";
 import { Button, ButtonLink } from "@/components/ui/Button";
 import type { LevelDefinition } from "@/game/config/levels";
 import type { RaceResult, FailureReason } from "@/game/types";
-import { RISK_PER_DEFERRED_LAP } from "@/game/scoring/xp";
+import { RISK_PER_DEFERRED_LAP, XP_PER_CONTACT } from "@/game/scoring/xp";
 import { useSession } from "@/stores/session";
 import { explorerTx } from "@/chain/config";
 import { formatLapTime, formatNumber, formatOrdinal } from "@/lib/format";
@@ -55,13 +55,14 @@ function XpRow({
   label: string;
   value: string;
   hint?: string;
-  tone?: "chalk" | "fog" | "amber" | "lime";
+  tone?: "chalk" | "fog" | "amber" | "lime" | "ember";
 }) {
   const toneClass = {
     chalk: "text-chalk",
     fog: "text-fog",
     amber: "text-amber",
     lime: "text-lime",
+    ember: "text-ember",
   }[tone];
 
   return (
@@ -179,6 +180,16 @@ export function ResultsOverlay({
               value={formatNumber(xp.overtakes)}
             />
             <XpRow label="Placing" value={formatNumber(xp.placing)} />
+            <XpRow
+              label="Contact penalty"
+              hint={
+                result.collisions === 0
+                  ? "clean"
+                  : `${result.collisions} × ${XP_PER_CONTACT}`
+              }
+              value={xp.penalty > 0 ? `−${formatNumber(xp.penalty)}` : "0"}
+              tone={xp.penalty > 0 ? "ember" : "fog"}
+            />
             <XpRow
               label="Risk multiplier"
               hint={

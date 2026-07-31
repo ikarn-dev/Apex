@@ -1,0 +1,11 @@
+Model Information:
+* title:	Realistic HD Lombardy poplar (1/75)
+* source:	https://sketchfab.com/3d-models/realistic-hd-lombardy-poplar-175-9a7f3416eacd47c3b731bf171c4ae5db
+* author:	PlantCatalog (https://sketchfab.com/PlantCatalog)
+
+Model License:
+* license type:	CC-BY-4.0 (http://creativecommons.org/licenses/by/4.0/)
+* requirements:	Author must be credited. Commercial use is allowed.
+
+If you use this 3D model in your project be sure to copy paste this credit wherever you share it:
+This work is based on "Realistic HD Lombardy poplar (1/75)" (https://sketchfab.com/3d-models/realistic-hd-lombardy-poplar-175-9a7f3416eacd47c3b731bf171c4ae5db) by PlantCatalog (https://sketchfab.com/PlantCatalog) licensed under CC-BY-4.0 (http://creativecommons.org/licenses/by/4.0/)

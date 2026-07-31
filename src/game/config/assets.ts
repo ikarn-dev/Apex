@@ -13,7 +13,7 @@
  * correct on disk. No rebuild or reload could fix it, because the URL never moved.
  */
 
-import manifest from "./generated/car-assets.json";
+import manifest from "./generated/asset-manifest.json";
 
 const HASHES = manifest.assets as Record<string, string>;
 
