@@ -3,7 +3,7 @@ import { SettingsScreen } from "@/components/screens/SettingsScreen";
 
 export const metadata: Metadata = {
   title: "Settings",
-  description: "Graphics tiers, control schemes, audio and chain endpoints.",
+  description: "Control scheme, audio and camera.",
 };
 
 export default function SettingsPage() {

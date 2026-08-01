@@ -101,6 +101,23 @@
     10px 100%,
     0 calc(100% - 10px)
   );
+
+  /*
+   * The same die, opened up for large surfaces. A 10px cut on a full-width card
+   * reads as a rounding error rather than as a shape.
+   *
+   * Two fixed scales and not one `--notch-size` knob, because custom properties
+   * inherit: a card that set the knob would silently resize the cut on every
+   * notched button inside it.
+   */
+  --notch-path-lg: polygon(
+    0 0,
+    calc(100% - 26px) 0,
+    100% 26px,
+    100% 100%,
+    26px 100%,
+    0 calc(100% - 26px)
+  );
 }
 
 html {
@@ -256,6 +273,12 @@ body[data-race="active"] {
 
   .clip-notch {
     clip-path: var(--notch-path);
+  }
+
+  /* For cards and panels. Same silhouette as the nav tabs, at a size a large
+     surface can carry. */
+  .clip-notch-lg {
+    clip-path: var(--notch-path-lg);
   }
 
   /**

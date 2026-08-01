@@ -1,27 +1,62 @@
 "use client";
 
-import { Panel, PanelHeader, Badge } from "@/components/ui/Panel";
-import { Button } from "@/components/ui/Button";
-import { QUALITY_PRESETS } from "@/game/config/quality";
+/**
+ * Settings.
+ *
+ * Only things that change how the game plays: input, sound, camera. Every row here
+ * writes to a value the engine actually reads at runtime — `RaceShell` passes
+ * `controls`, `sfxEnabled`, `masterVolume` and `reducedMotion` into `RaceConfig`,
+ * and volume is pushed into the live engine as it moves.
+ *
+ * What is deliberately absent:
+ *
+ * - Graphics. The tier is detected and then owned by the runtime governor, which
+ *   may only ever demote (see `stores/settings`). There was never a control here,
+ *   only a readout of what had been detected — diagnostics wearing a setting's
+ *   clothes.
+ * - Cluster, RPC endpoints, program id. Build-time constants a player cannot act
+ *   on. `ChainStatus` already says whether the chain is live.
+ * - The device probe. GPU string, core count, pixel ratio, WebGL support. Useful
+ *   in a bug report, not on a settings screen.
+ * - Telemetry overlay. `showTelemetry` is read by nothing: the HUD has no frame
+ *   counter to reveal. The store field stays — dropping it needs a version bump
+ *   and a migration — but a switch that does nothing does not belong on screen.
+ */
+
 import type { ControlScheme } from "@/game/types";
-import { detectQualityTier } from "@/lib/device";
-import { useDeviceProfile } from "@/hooks/useDeviceProfile";
 import { useSettings } from "@/stores/settings";
-// String constants only — importing the parsed PublicKey here would pull
-// @solana/web3.js into a screen that never sends a transaction.
-import {
-  APEX_PROGRAM_ID_BASE58,
-  BASE_RPC,
-  CHAIN_ENABLED,
-  CLUSTER,
-  ER_RPC,
-} from "@/chain/config";
 import { cn } from "@/lib/cn";
 
 const CONTROL_OPTIONS: { value: ControlScheme; label: string; hint: string }[] = [
   { value: "keyboard", label: "Keyboard", hint: "WASD or arrows · Space handbrake" },
   { value: "gamepad", label: "Gamepad", hint: "Analog stick and triggers" },
 ];
+
+/**
+ * Shared shape for every control in the card.
+ *
+ * Same notch and the same gold-on-navy selected state as a nav tab, so a chosen
+ * option reads as the same kind of "this is the live one" it does in the header.
+ * `h-11` throughout: these are touch targets.
+ */
+const CHIP =
+  "clip-notch inline-flex h-11 items-center justify-center font-ui text-[11px] " +
+  "font-semibold uppercase tracking-[0.14em] transition-colors duration-150 " +
+  "focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-gold";
+
+const CHIP_ON = "bg-gold text-navy";
+const CHIP_OFF = "bg-cream/10 text-cream/55 hover:bg-cream/20 hover:text-cream";
+
+function Section({ label, children }: { label: string; children: React.ReactNode }) {
+  return (
+    <section className="border-b grid-rule last:border-b-0">
+      <h2 className="grid-face px-5 py-3 font-mono text-[10px] uppercase leading-none tracking-[0.18em] text-cream/50 sm:px-8">
+        {label}
+      </h2>
+      <div className="divide-y divide-cream/10">{children}</div>
+    </section>
+  );
+}
 
 function Row({
   label,
@@ -33,12 +68,16 @@ function Row({
   children: React.ReactNode;
 }) {
   return (
-    <div className="flex flex-col gap-3 px-4 py-4 sm:flex-row sm:items-center sm:justify-between">
+    <div className="flex flex-col gap-3 px-5 py-5 sm:flex-row sm:items-center sm:justify-between sm:gap-10 sm:px-8">
       <div className="min-w-0">
-        <p className="font-mono text-xs text-chalk">{label}</p>
-        {hint ? <p className="mt-1 text-[10px] leading-relaxed text-fog">{hint}</p> : null}
+        <p className="font-display text-sm font-semibold leading-none text-cream">{label}</p>
+        {hint ? (
+          <p className="mt-2 max-w-prose font-mono text-[11px] leading-relaxed text-cream/50">
+            {hint}
+          </p>
+        ) : null}
       </div>
-      <div className="flex shrink-0 flex-wrap gap-2">{children}</div>
+      <div className="flex shrink-0 flex-wrap items-center gap-2">{children}</div>
     </div>
   );
 }
@@ -59,62 +98,111 @@ function Toggle({
       aria-checked={on}
       aria-label={label}
       onClick={onChange}
-      className={cn(
-        "relative h-11 w-20 border font-mono text-[10px] uppercase tracking-[0.14em] transition-colors",
-        on ? "border-apex/60 bg-apex/15 text-apex" : "border-steel text-fog",
-      )}
+      className={cn(CHIP, "w-20", on ? CHIP_ON : CHIP_OFF)}
     >
       {on ? "On" : "Off"}
     </button>
   );
 }
 
+function Choice({
+  active,
+  onClick,
+  title,
+  children,
+}: {
+  active: boolean;
+  onClick: () => void;
+  title?: string;
+  children: React.ReactNode;
+}) {
+  return (
+    <button
+      type="button"
+      aria-pressed={active}
+      onClick={onClick}
+      title={title}
+      className={cn(CHIP, "px-5", active ? CHIP_ON : CHIP_OFF)}
+    >
+      {children}
+    </button>
+  );
+}
+
 export function SettingsScreen() {
   const settings = useSettings();
-  // Device probing touches browser globals, so it yields null on the server.
-  const device = useDeviceProfile();
-  const detected = device ? detectQualityTier(device) : null;
-  const preset = detected ? QUALITY_PRESETS[detected] : null;
+  const volume = Math.round(settings.masterVolume * 100);
 
   return (
-    <div className="mx-auto w-full max-w-4xl px-4 py-8 sm:px-6 sm:py-12">
+    <div className="w-full px-4 py-10 sm:px-8">
       <header>
-        <span className="label">Settings</span>
-        <h1 className="mt-2 font-display text-3xl font-bold tracking-tight text-chalk sm:text-4xl">
+        <span className="font-mono text-[10px] uppercase tracking-[0.18em] text-cream/45">
+          Settings
+        </span>
+        <h1 className="mt-2 font-display text-3xl font-extrabold tracking-tight text-cream">
           Tuning
         </h1>
-        <p className="mt-2 max-w-2xl text-xs leading-relaxed text-fog">
-          Graphics are not a setting. The tier is detected from your device and
-          then lowered automatically if frames start dropping — the governor never
-          raises it again, because a device that just recovered would fall over
-          immediately and the player would watch the resolution pump.
+        <p className="mt-2 max-w-xl font-mono text-[11px] leading-relaxed text-cream/50">
+          Input, sound and camera. Graphics are detected from your device and tuned
+          while you drive, so there is nothing to set here.
         </p>
       </header>
 
-      <Panel className="mt-8 p-0">
-        <PanelHeader
-          label="Graphics"
-          action={detected ? <Badge tone="fog">Automatic · {detected}</Badge> : null}
-        />
-        <div className="divide-y divide-steel">
+      {/* One container, cut from the same die as the nav tabs and the connect
+          button, at the larger scale a full-width surface can carry. */}
+      <div className="clip-notch-lg grid-band card-glow mt-8">
+        <Section label="Controls">
           <Row
-            label="Detected profile"
-            hint={
-              preset
-                ? `DPR cap ${preset.maxPixelRatio}× · shadows ${
-                    preset.shadowMapSize || "off"
-                  } · ${preset.drawDistance}m draw · ${preset.maxRivals} rivals`
-                : "Probing your device…"
-            }
+            label="Input scheme"
+            hint="Keyboard by default. A connected gamepad takes over automatically on Auto."
           >
-            <span className="font-mono text-[10px] uppercase tracking-[0.14em] text-fog">
-              {detected ?? "—"}
+            <Choice active={settings.controls === null} onClick={() => settings.setControls(null)}>
+              Auto
+            </Choice>
+            {CONTROL_OPTIONS.map((option) => (
+              <Choice
+                key={option.value}
+                active={settings.controls === option.value}
+                onClick={() => settings.setControls(option.value)}
+                title={option.hint}
+              >
+                {option.label}
+              </Choice>
+            ))}
+          </Row>
+        </Section>
+
+        <Section label="Audio">
+          <Row
+            label="Sound effects"
+            hint="Engine, tyres and impacts are synthesised in the browser — no audio files are downloaded."
+          >
+            <Toggle
+              on={settings.sfxEnabled}
+              onChange={settings.toggleSfx}
+              label="Sound effects"
+            />
+          </Row>
+          <Row label="Master volume" hint="Applies to the running race immediately.">
+            <input
+              type="range"
+              min={0}
+              max={100}
+              value={volume}
+              onChange={(event) => settings.setMasterVolume(Number(event.target.value) / 100)}
+              aria-label="Master volume"
+              className="h-11 w-44 accent-gold"
+            />
+            <span className="w-11 text-right font-mono text-xs tabular-nums text-cream">
+              {volume}%
             </span>
           </Row>
+        </Section>
 
+        <Section label="Camera">
           <Row
             label="Reduced motion"
-            hint="Disables camera shake and screen effects. Follows your OS setting by default."
+            hint="Holds the chase camera steady. It still follows the car, it just stops reacting to impacts and kerbs."
           >
             <Toggle
               on={settings.reducedMotion}
@@ -122,137 +210,8 @@ export function SettingsScreen() {
               label="Reduced motion"
             />
           </Row>
-
-          <Row label="Telemetry overlay" hint="Frame rate, draw calls and rollup tick counters.">
-            <Toggle
-              on={settings.showTelemetry}
-              onChange={settings.toggleTelemetry}
-              label="Telemetry overlay"
-            />
-          </Row>
-        </div>
-      </Panel>
-
-      <Panel className="mt-6 p-0">
-        <PanelHeader label="Controls" />
-        <div className="divide-y divide-steel">
-          <Row
-            label="Scheme"
-            hint="Keyboard by default; a connected gamepad takes over automatically."
-          >
-            <Button
-              variant={settings.controls === null ? "primary" : "secondary"}
-              size="sm"
-              onClick={() => settings.setControls(null)}
-            >
-              Auto
-            </Button>
-            {CONTROL_OPTIONS.map((option) => (
-              <Button
-                key={option.value}
-                variant={settings.controls === option.value ? "primary" : "secondary"}
-                size="sm"
-                onClick={() => settings.setControls(option.value)}
-                title={option.hint}
-              >
-                {option.label}
-              </Button>
-            ))}
-          </Row>
-        </div>
-      </Panel>
-
-      <Panel className="mt-6 p-0">
-        <PanelHeader label="Audio" />
-        <div className="divide-y divide-steel">
-          <Row
-            label="Sound effects"
-            hint="Engine, tyres and impacts are synthesised in the browser — no audio files are downloaded."
-          >
-            <Toggle on={settings.sfxEnabled} onChange={settings.toggleSfx} label="Sound effects" />
-          </Row>
-          <Row label="Master volume">
-            <input
-              type="range"
-              min={0}
-              max={100}
-              value={Math.round(settings.masterVolume * 100)}
-              onChange={(event) =>
-                settings.setMasterVolume(Number(event.target.value) / 100)
-              }
-              aria-label="Master volume"
-              className="h-11 w-40 accent-apex"
-            />
-          </Row>
-        </div>
-      </Panel>
-
-      <Panel className="mt-6 p-0">
-        <PanelHeader
-          label="Chain"
-          action={
-            <Badge tone={CHAIN_ENABLED ? "lime" : "amber"}>
-              {CHAIN_ENABLED ? "Live" : "Simulation"}
-            </Badge>
-          }
-        />
-        <dl className="divide-y divide-steel">
-          <Row label="Cluster">
-            <code className="font-mono text-[11px] text-chalk">{CLUSTER}</code>
-          </Row>
-          <Row label="Base layer RPC">
-            <code className="max-w-[220px] truncate font-mono text-[11px] text-chalk">
-              {BASE_RPC}
-            </code>
-          </Row>
-          <Row label="Ephemeral Rollup">
-            <code className="max-w-[220px] truncate font-mono text-[11px] text-chalk">
-              {ER_RPC}
-            </code>
-          </Row>
-          <Row
-            label="apex_racing program"
-            hint={
-              CHAIN_ENABLED
-                ? undefined
-                : "Unset. The game runs in Simulation mode: identical gameplay, XP kept locally."
-            }
-          >
-            <code className="max-w-[220px] truncate font-mono text-[11px] text-chalk">
-              {CHAIN_ENABLED ? APEX_PROGRAM_ID_BASE58 : "not deployed"}
-            </code>
-          </Row>
-        </dl>
-      </Panel>
-
-      {device ? (
-        <Panel className="mt-6 p-0">
-          <PanelHeader label="Detected device" />
-          <dl className="divide-y divide-steel">
-            <Row label="GPU">
-              <code className="max-w-[240px] truncate font-mono text-[11px] text-chalk">
-                {device.gpu ?? "masked"}
-              </code>
-            </Row>
-            <Row label="Cores / memory">
-              <code className="font-mono text-[11px] text-chalk">
-                {device.cores} / {device.memoryGb ? `${device.memoryGb} GB` : "unreported"}
-              </code>
-            </Row>
-            <Row label="Pixel ratio">
-              <code className="font-mono text-[11px] text-chalk">
-                {device.pixelRatio}×
-                {preset ? ` (capped at ${preset.maxPixelRatio}×)` : null}
-              </code>
-            </Row>
-            <Row label="WebGL 2">
-              <code className="font-mono text-[11px] text-chalk">
-                {device.hasWebGL2 ? "yes" : "no"}
-              </code>
-            </Row>
-          </dl>
-        </Panel>
-      ) : null}
+        </Section>
+      </div>
     </div>
   );
 }
